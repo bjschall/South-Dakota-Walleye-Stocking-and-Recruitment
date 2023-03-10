@@ -3,6 +3,8 @@ library(brms)
 library(Matrix)
 library(tidybayes)
 library(gridExtra)
+library(grid)
+library(ggpubr)
 library(tidyverse)
 
 ############################################################
@@ -33,42 +35,51 @@ stock_mod<- brm(bf(CPUE2~Stocked + (1|Waterbody2),
 #model summary and checks
 summary(stock_mod)
 bayes_R2(stock_mod)
-pp_check(stock_mod)
+pp_check(stock_mod, ndraws = 10,type = "boxplot")+theme_classic()
 
 #Sample posterior for magnitude of difference
-posts.new <- add_epred_draws(stock_mod, re_formula = NA,
+posts.stock <- add_epred_draws(stock_mod, re_formula = NA,
                              newdata = stock_mod$data %>% distinct(Stocked) %>% 
                                mutate(Waterbody2 = "NSDFNSDF"),
                              allow_new_levels = TRUE, dpar=T)
 
 #calculate means and 95% quantile-based CrI
-qi<-posts.new %>% 
+qi<-posts.stock%>% 
   mean_qi();qi
 
-#violin plot
-posts.new %>% 
-  ggplot(aes(x=factor(Stocked, level=c("Y", "N")), y=.epred))+
-  # geom_point(data=wae3, aes(x=Stocked, y=CPUE2), position=position_jitter(width=0.1),alpha=0.5)+
-  geom_violin(fill='gray50',trim=F)+
-  ylab("Age-2 Walleye CPUE")+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+po1<-posts.stock %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate") %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+po1<-bind_rows(po1, wae3)
+po1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy <- tibble(Stocked=rep(c("Y","N"),2),
+                estimate=c("prob","prob", "WAE","WAE"),
+                value=c(0,0.4,0,40))
+
+po1 %>% 
+  ggplot(aes(x=factor(Stocked, level=c("Y", "N")), y=value))+
+  geom_point(data=subset(po1, estimate=="WAE"), aes(y=CPUE2), alpha=0.3, position = position_jitter(width=0.1))+
+  geom_violin(fill='gray50',trim=F, alpha=0.9)+
+  ylab(NULL)+
   xlab(NULL)+
-  scale_x_discrete(breaks=c("Y","N"),labels=c("Stocked", "Not Stocked"))+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  scale_x_discrete(breaks=c("Y","N"),labels=c("Stocked", "Not Stocked"), limits=c("Y", "N"))+
   theme_classic()+
-  #annotate("text", x=1.1, y=6, label= R^2~"= 0.218", size=6)+
-  #coord_cartesian(ylim=c(0,6))+
+  geom_blank(data=dummy)+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))
-
-#Probabilites
-posts1.1<-posts.new %>%  
-  ungroup() %>% 
-  select(.draw, Stocked, .epred) %>% 
-  pivot_wider(names_from = Stocked, values_from=.epred) %>% 
-  mutate(diff=Y-N,diff2=Y-2*N, diff2.5=Y-2.5*N,diff3=Y-3*N)
-sum(posts1.1$Y-posts1.1$N>0)/4000
-sum(posts1.1$diff2>0)/4000
-sum(posts1.1$diff2.5>0)/4000
-
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ###### Size  of stocked products * waterbody type
@@ -81,7 +92,7 @@ get_prior(bf(CPUE2~Size2*Type + (1|Waterbody2),
 S_T<- brm(bf(CPUE2~Size2*Type + (1|Waterbody2),
             hu~Size2*Type + (1|Waterbody2)),
          data=wae3, 
-         prior = c(prior(normal(1,.5), class="b"),
+         prior = c(prior(normal(0,.5), class="b"),
                    prior(normal(-1,0.5), coef="TypeMarginal"),
                    prior(exponential(2), class="sd"),
                    prior(normal(1, 0.5), class="Intercept"),
@@ -106,7 +117,7 @@ posts_S_T <- add_epred_draws(S_T, re_formula = NA,
 
 #calculate means and 95% quantile-based CrI
 qi_S_T<-posts_S_T %>% 
-  mean_qi();qi3
+  mean_qi();qi_S_T
 
 #Estimate probabilities of differences among groups
 posts_S_T_wide<-posts_S_T %>%  
@@ -134,20 +145,43 @@ sum(posts_S_T_wide$SF_CM>0)/4000
 sum(posts_S_T_wide$LF_CM>0)/4000
 sum(posts_S_T_wide$No_CM>0)/4000
 
-#Violin plot
-posts_S_T %>% 
-  ggplot(aes(x=factor(Size2, level=c("d_fr", "c_sf", "b_lf", "a_no")), y=.epred, fill=Type))+
-  geom_violin(trim=F)+
-  xlab("Size at Stocking")+ 
-  ylab("Age-2 Walleye CPUE")+
+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+type1<-posts_S_T %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate") %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+sizetype<-bind_rows(type1, wae3)
+sizetype %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_ST <- tibble(Size2=rep(c("d_fr", "c_sf", "b_lf", "a_no"),2),
+                   Type=c(rep("Marginal",4), rep("Consistent",4)), 
+                  estimate=rep(c("prob","prob", "WAE","WAE"),2),
+                  value=rep(c(0,0.6,0,40),2))
+sizetype %>% 
+  ggplot(aes(x=factor(Size2, level=c("d_fr", "c_sf", "b_lf", "a_no")), y=value, fill=Type))+
+  geom_point(data=subset(sizetype, estimate=="WAE"), aes(y=CPUE2,group=Type), alpha=0.3, position = position_jitterdodge(jitter.width = .05))+
+  geom_violin(trim=F, alpha=0.9)+
+  xlab("Size at stocking")+
+  ylab(NULL)+
+  scale_fill_grey(start=0, end=.65, name = NULL)+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
   scale_x_discrete(breaks=c("a_no","b_lf","c_sf", "d_fr"),
+                   limits=c( "d_fr","c_sf","b_lf","a_no"),
                    labels=c("Not Stocked", "Large Fingerling", "Small Fingerling", "Fry"))+
-  theme_classic()+ 
-  #annotate("text", x=1.5, y=10, label= expression(R^2~"= 0.236"), size=6)+
-  scale_fill_grey(start=0, end=.65)+
-  ylim(c(0,15))+
+  geom_blank(data=dummy_ST)+
+  theme_classic()+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ###### Management purpose
@@ -199,22 +233,42 @@ sum(posts_mp_wide$IM>0)/4000
 sum(posts_mp_wide$IN>0)/4000
 sum(posts_mp_wide$MN>0)/4000
 
-#Violin plot
-posts_mp %>% 
-  ggplot(aes(x=factor(ManagementPurpose,level=c("Introductory", "Maintenance", "Supplemental", "None")), y=.epred))+
-  geom_violin(trim=F, fill="gray50")+
-  xlab("Management Purpose")+ 
-  ylab("Age-2 Walleye CPUE")+
-  theme_classic()+ 
-  #annotate("text", x=1.5, y=10, label= expression(R^2~"= 0.236"), size=6)+
-  scale_fill_grey(start=0, end=.65)+
-  ylim(c(0,15))+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+mp1<-posts_mp %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate") %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+manage1<-bind_rows(mp1, wae3)
+manage1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_MP <- tibble(ManagementPurpose=c("Introductory", "Maintenance", "Supplemental", "None"),
+                   estimate=c("prob","prob", "WAE","WAE"),
+                   value=c(0,0.8,0,40))
+
+manage1 %>% 
+  ggplot(aes(x=factor(ManagementPurpose,level=c("Introductory", "Maintenance", "Supplemental", "None")), y=value))+
+  geom_point(data=subset(manage1, estimate=="WAE"), aes(y=CPUE2), alpha=0.3, position = position_jitter(width=0.1))+
+  geom_violin(fill='gray50',trim=F, alpha=0.9)+
+  geom_blank(data=dummy_MP)+
+  ylab(NULL)+
+  xlab("Mangagement purpose")+
+  scale_x_discrete(limits=c("Introductory", "Maintenance", "Supplemental", "None"))+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  theme_classic()+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ###### Waterbody Characteristics
-
 #model
 water_mod<-brm(bf(CPUE2 ~ Hectares_std + WaterbodyType  + (1|Waterbody2),
            hu ~ Hectares_std + WaterbodyType   + (1|Waterbody2)),
@@ -257,26 +311,59 @@ sum(posts_water_wide$diffN_I>0)/400000
   group_by(Hectares_std, WaterbodyType) %>% 
   mean_qi(.epred, hu))
 
-#plot
-ggplot()+
-  geom_point(data=wae3, aes(x=Hectares_std, y=CPUE2), alpha=0.3)+
-  geom_line(data=water_meanqi,aes(x=Hectares_std, y=.epred, col=WaterbodyType), size=1)+
-  geom_ribbon(data=filter(water_meanqi, WaterbodyType=="Natural Basin"),aes(x=Hectares_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-  geom_ribbon(data=filter(water_meanqi, WaterbodyType=="Impoundment/Excavated"),aes(x=Hectares_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+w1<- water_meanqi %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate")
+
+w2<- w1 %>%
+  rename(prob.lower=hu.lower, prob.upper=hu.upper, WAE.upper=.epred.upper, WAE.lower=.epred.lower) %>% 
+  pivot_longer(cols=c(prob.lower,  WAE.lower), names_to ="int_low", values_to = "int_lower")
+w3<- w2 %>% 
+  pivot_longer(cols=c(prob.upper,  WAE.upper), names_to ="int_up", values_to = "int_upper")
+
+w3.1<-w3 %>% filter(estimate=="prob" & 
+              str_detect(int_low, "^p")& 
+              str_detect(int_up, "^p"))
+w3.2<-w3 %>% filter(estimate=="WAE" & 
+                      str_detect(int_low, "^W")& 
+                      str_detect(int_up, "^W"))
+
+w4<-bind_rows(w3.1, w3.2)
+
+water1<-bind_rows(w4, wae3)
+water1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_w <- tibble(Hectares=rep(c(-.50,.5),4),
+                  WaterbodyType=c(rep("Natural Basin",4), rep("Impoundment/Excavated",4)), 
+                  estimate=rep(c("prob","prob", "WAE","WAE"),2),
+                  value=rep(c(0,0.4,0,40),2))
+
+water1 %>% ggplot()+
+  geom_point(data=subset(water1, estimate=="WAE"), aes(x=Hectares_std, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=w4, aes(y=value, x=Hectares_std, ymin=int_lower, ymax=int_upper,fill=WaterbodyType), alpha=0.5)+
+  geom_line(data=w4,aes(x=Hectares_std, y=value, linetype=WaterbodyType), size=1)+
+  geom_blank(data=dummy_w, aes(y=value))+
+  xlab("Surface area (hectares)")+
+  ylab(NULL)+
+  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Natural Basin", "Impoundment"))+
+  scale_linetype_manual(values=c(1,3), name=NULL,labels=c("Natural Basin", "Impoundment"))+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  scale_x_continuous(labels=c("0", "2,000", "4,000", "6,000"), 
+                     breaks=c(((0-mean(wae3$Hectares))/sd(wae3$Hectares)),
+                              ((2000-mean(wae3$Hectares))/sd(wae3$Hectares)),
+                              ((4000-mean(wae3$Hectares))/sd(wae3$Hectares)),
+                              ((6000-mean(wae3$Hectares))/sd(wae3$Hectares))))+
   theme_classic()+
-  scale_color_manual(values=c("black", "gray"))+
-  xlab("Surface area (hectares)") +
-  ylab("Age-2 Walleye CPGN")+
-  scale_x_continuous(labels=c(0, "2,000", "4,000", "6,000", "8,000"), 
-                              breaks=c(((0-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                                       ((2000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                                       ((4000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                                       ((6000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                                       ((8000-mean(wae3$Hectares))/sd(wae3$Hectares))))+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14), 
-        legend.text = element_text(size=12))+
-  ylim(0,40)
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ######Environmental variables
@@ -321,7 +408,9 @@ posts_env_GDD <- add_epred_draws(env, re_formula = NA,
 posts_env_GDD %<>%
   select(.draw, GDD_std, SpringPrecip_std, WSI_std, .epred, hu) %>% 
   group_by(GDD_std) %>% 
-  mean_qi(.epred, hu)
+  mean_qi(.epred, hu) %>% 
+  rename(Predictor = GDD_std) %>% 
+  mutate(Parameter = "GDD_std")
 
 #WSI
 posts_env_WSI <- add_epred_draws(env, re_formula = NA,
@@ -333,7 +422,9 @@ posts_env_WSI <- add_epred_draws(env, re_formula = NA,
 posts_env_WSI %<>%
   select(.draw, GDD_std, SpringPrecip_std, WSI_std, .epred, hu) %>% 
   group_by(WSI_std) %>% 
-  mean_qi(.epred, hu)
+  mean_qi(.epred, hu) %>% 
+  rename(Predictor = WSI_std) %>% 
+  mutate(Parameter = "WSI_std")
 
 #Spring Precip
 posts_env_SP <- add_epred_draws(env, re_formula = NA,
@@ -346,64 +437,11 @@ posts_env_SP <- add_epred_draws(env, re_formula = NA,
 posts_env_SP %<>%
   select(.draw, GDD_std, SpringPrecip_std, WSI_std, .epred, hu) %>% 
   group_by(SpringPrecip_std) %>% 
-  mean_qi(.epred, hu)
+  mean_qi(.epred, hu) %>% 
+  rename(Predictor = SpringPrecip_std) %>% 
+  mutate(Parameter = "SpringPrecip_std")
 
-#plot all three relationships and combine into one figure
-(p1<-ggplot()+
-  geom_point(data=wae3, aes(x=GDD_std, y=CPUE2), alpha=0.3)+
-  geom_line(data=posts_env_GDD,aes(x=GDD_std, y=.epred), size=1)+
-  geom_ribbon(data=posts_env_GDD,aes(x=GDD_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-  theme_classic()+
-  xlab("Growing degree days") +
-  ylab("Age-2 Walleye CPGN")+
-  scale_x_continuous(labels=c("1,900", "2,100", "2,300", "2,500", "2,700", "2,900"), 
-                     breaks=c(((1900-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2100-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2300-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2500-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2700-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2900-mean(wae3$GDD))/sd(wae3$GDD))),
-                    limits=c(-2.35,3.4))+
-  theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))+
-  ylim(0,40))
-
-(p2<-ggplot()+
-    geom_point(data=wae3, aes(x=WSI_std, y=CPUE2), alpha=0.3)+
-    geom_line(data=posts_env_WSI,aes(x=WSI_std, y=.epred), size=1)+
-    geom_ribbon(data=posts_env_WSI,aes(x=WSI_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-    theme_classic()+
-    xlab("Winter severity index") +
-    ylab(NULL)+
-    scale_x_continuous(labels=c("-2,000", "-1,500", "-1,000", "-500"), 
-                       breaks=c(((-2000-mean(wae3$WSI))/sd(wae3$WSI)),
-                                ((-1500-mean(wae3$WSI))/sd(wae3$WSI)),
-                                ((-1000-mean(wae3$WSI))/sd(wae3$WSI)),
-                                ((-500-mean(wae3$WSI))/sd(wae3$WSI))),
-                       limits=c(-2.1,2.3))+
-    theme(axis.text = element_text(size=12), 
-          axis.title = element_text(size=14))+
-    ylim(0,40))
-
-(p3<-ggplot()+
-    geom_point(data=wae3, aes(x=SpringPrecip_std, y=CPUE2), alpha=0.3)+
-    geom_line(data=posts_env_SP,aes(x=SpringPrecip_std, y=.epred), size=1)+
-    geom_ribbon(data=posts_env_SP,aes(x=SpringPrecip_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-    theme_classic()+
-    xlab("Spring precipitation (mm)") +
-    ylab(NULL)+
-    scale_x_continuous(labels=c("100", "200", "300", "400", "500"), 
-                       breaks=c(((100-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                                ((200-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                                ((300-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                                ((400-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                                ((500-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip))),
-                       limits=c(-1.5,4.15))+
-    theme(axis.text = element_text(size=12), 
-          axis.title = element_text(size=14))+
-    ylim(0,40))
-
-grid.arrange(p1, p2, p3, ncol=3)
+env_dat<-bind_rows(posts_env_GDD, posts_env_WSI,posts_env_SP)
 
 #evaluate trends in hu parameter
 posts_env_GDD %>% 
@@ -424,6 +462,118 @@ posts_env_SP %>%
   geom_ribbon(aes(ymin=hu.lower, ymax=hu.upper), alpha=0.3)+
   theme_classic()
 
+#plot all three relationships and combine into one figure
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+e1<- env_dat %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate")
+
+e2<- e1 %>%
+  rename(prob.lower=hu.lower, prob.upper=hu.upper, WAE.upper=.epred.upper, WAE.lower=.epred.lower) %>% 
+  pivot_longer(cols=c(prob.lower,  WAE.lower), names_to ="int_low", values_to = "int_lower") %>% 
+  pivot_longer(cols=c(prob.upper,  WAE.upper), names_to ="int_up", values_to = "int_upper")
+
+e2.1<-e2 %>% filter(estimate=="prob" & 
+                        str_detect(int_low, "^p")& 
+                        str_detect(int_up, "^p"))
+e2.2<-e2 %>% filter(estimate=="WAE" & 
+                        str_detect(int_low, "^W")& 
+                        str_detect(int_up, "^W"))
+
+e3<-bind_rows(e2.1, e2.2)
+env_wae <- wae3 %>% pivot_longer(cols = c(SpringPrecip_std,GDD_std, WSI_std), names_to = "Parameter", values_to = "Predictor")
+
+env1<-bind_rows(e3, env_wae)
+env1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_env <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
+                    estimate=rep(c("prob","prob", "WAE","WAE"),3),
+                    value=rep(c(0,0.3,0,40),3))
+
+p <- "SpringPrecip_std"
+
+p1 <- ggplot()+
+  geom_point(data=subset(env1, estimate=="WAE"&is.na(.interval)&Parameter==p), aes(x=Predictor, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=subset(e3, Parameter==p), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper), alpha=0.5)+
+  geom_line(data=subset(e3, Parameter==p),aes(x=Predictor, y=value), size=1)+
+  geom_blank(data=subset(dummy_env, Parameter==p), aes(y=value))+
+  xlab("Spring precipitation (mm)")+
+  ylab(NULL)+
+  scale_x_continuous(labels=c("100", "200", "300", "400", "500"), 
+                     breaks=c(((100-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
+                              ((200-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
+                              ((300-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
+                              ((400-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
+                              ((500-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip))),
+                     limits=c(-1.5,5))+
+  scale_fill_manual(values=c("black", "gray"),name = NULL)+
+  facet_wrap(~estimate, scales="free",strip.position = "left", 
+             labeller= labeller(estimate=labs), ncol=2)+
+  theme_classic()+
+  theme(axis.text = element_text(size=12), 
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside");p1
+
+#
+dummy_env2 <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
+                    estimate=rep(c("prob","prob", "WAE","WAE"),3),
+                    value=rep(c(0,0.5,0,40),3))
+q <- "GDD_std"
+
+p2 <- ggplot()+
+  geom_point(data=subset(env1, estimate=="WAE"&is.na(.interval)&Parameter==q), aes(x=Predictor, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=subset(e3, Parameter==q), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper), alpha=0.5)+
+  geom_line(data=subset(e3, Parameter==q),aes(x=Predictor, y=value), size=1)+
+  geom_blank(data=subset(dummy_env2, Parameter==q), aes(y=value))+
+  xlab("Growing degree days (GDD)")+
+  ylab(NULL)+
+  scale_x_continuous(labels=c("1900", "2200","2500", "2800"), 
+                     breaks=c(((1900-mean(wae3$GDD))/sd(wae3$GDD)),
+                              ((2200-mean(wae3$GDD))/sd(wae3$GDD)),
+                              ((2500-mean(wae3$GDD))/sd(wae3$GDD)),
+                              ((2800-mean(wae3$GDD))/sd(wae3$GDD))))+
+  scale_fill_manual(values=c("black", "gray"),name = NULL)+
+  facet_wrap(~estimate, scales="free",strip.position = "left", 
+             labeller= labeller(estimate=labs), ncol=2)+
+  theme_classic()+
+  theme(axis.text = element_text(size=12), 
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside");p2
+#
+dummy_env3 <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
+                     estimate=rep(c("prob","prob", "WAE","WAE"),3),
+                     value=rep(c(0,0.3,0,40),3))
+r <- "WSI_std"
+
+p3 <- ggplot()+
+  geom_point(data=subset(env1, estimate=="WAE"&is.na(.interval)&Parameter==r), aes(x=Predictor, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=subset(e3, Parameter==r), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper), alpha=0.5)+
+  geom_line(data=subset(e3, Parameter==r),aes(x=Predictor, y=value), size=1)+
+  geom_blank(data=subset(dummy_env3, Parameter==r), aes(y=value))+
+  xlab("Winter severity index (WSI)")+
+  ylab(NULL)+
+  scale_x_continuous(labels=c("-2,000", "-1,500", "-1,000", "-500"), 
+                     breaks=c(((-2000-mean(wae3$WSI))/sd(wae3$WSI)),
+                              ((-1500-mean(wae3$WSI))/sd(wae3$WSI)),
+                              ((-1000-mean(wae3$WSI))/sd(wae3$WSI)),
+                              ((-500-mean(wae3$WSI))/sd(wae3$WSI))))+
+  scale_fill_manual(values=c("black", "gray"),name = NULL)+
+  facet_wrap(~estimate, scales="free",strip.position = "left", 
+             labeller= labeller(estimate=labs), ncol=2)+
+  theme_classic()+
+  theme(axis.text = element_text(size=12), 
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside");p3
+
+grid.arrange(p2, p3, p1, ncol=1)
 ############################################################
 ####### Stock-size Walleye
 #filter data
@@ -465,23 +615,58 @@ wae_meanqi <- posts_wae %>%
   group_by(WAE_adj) %>% 
   mean_qi(.epred, hu)
 
-#plot
+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+st1<- wae_meanqi %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate")
+
+st2<- st1 %>%
+  rename(prob.lower=hu.lower, prob.upper=hu.upper, WAE.upper=.epred.upper, WAE.lower=.epred.lower) %>% 
+  pivot_longer(cols=c(prob.lower,  WAE.lower), names_to ="int_low", values_to = "int_lower")
+st3<- st2 %>% 
+  pivot_longer(cols=c(prob.upper,  WAE.upper), names_to ="int_up", values_to = "int_upper")
+
+st3.1<-st3 %>% filter(estimate=="prob" & 
+                      str_detect(int_low, "^p")& 
+                      str_detect(int_up, "^p"))
+st3.2<-st3 %>% filter(estimate=="WAE" & 
+                      str_detect(int_low, "^W")& 
+                      str_detect(int_up, "^W"))
+
+st4<-bind_rows(st3.1, st3.2)
+
+st_wae1<-bind_rows(st4, adultWAE)
+st_wae1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_wae <- tibble(WAE_adj=rep(c(-.50,.5),2),
+                  estimate=c("prob","prob", "WAE","WAE"),
+                  value=c(0,1,0,40))
 ggplot()+
-  geom_point(data=adultWAE, aes(x=WAE_adj, y=CPUE2), alpha=0.3)+
-  geom_line(data=wae_meanqi,aes(x=WAE_adj, y=.epred), size=1)+
-  geom_ribbon(data=wae_meanqi,aes(x=WAE_adj, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-  theme_classic()+
-  xlab("Stock-length Walleye CPGN") +
-  ylab("Age-2 Walleye CPGN")+
+  geom_point(data=subset(st_wae1, estimate=="WAE"), aes(x=WAE_adj, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=st4, aes(y=value, x=WAE_adj, ymin=int_lower, ymax=int_upper), alpha=0.5)+
+  geom_line(data=st4,aes(x=WAE_adj, y=value), size=1)+
+  geom_blank(data=dummy_wae, aes(y=value))+
+  xlab("Stock-length Walleye CPGN")+
+  ylab(NULL)+
+  scale_fill_manual(values=c("black", "gray"),name = NULL)+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
   scale_x_continuous(labels=c(0, 25, 50, 75, 100), 
                      breaks=c(((0-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
                               ((25-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
                               ((50-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
                               ((75-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
                               ((100-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S))))+
+  theme_classic()+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))+
-  ylim(0,40)
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ##### Centrarchids
@@ -524,14 +709,45 @@ cent_meanqi <- posts_cent %>%
   group_by(Centrarchids_std) %>% 
   mean_qi(.epred, hu)
 
-#plot
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+c1<- cent_meanqi %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate")
+
+c2<- c1 %>%
+  rename(prob.lower=hu.lower, prob.upper=hu.upper, WAE.upper=.epred.upper, WAE.lower=.epred.lower) %>% 
+  pivot_longer(cols=c(prob.lower,  WAE.lower), names_to ="int_low", values_to = "int_lower")
+c3<- c2 %>% 
+  pivot_longer(cols=c(prob.upper,  WAE.upper), names_to ="int_up", values_to = "int_upper")
+
+c3.1<-c3 %>% filter(estimate=="prob" & 
+                        str_detect(int_low, "^p")& 
+                        str_detect(int_up, "^p"))
+c3.2<-c3 %>% filter(estimate=="WAE" & 
+                        str_detect(int_low, "^W")& 
+                        str_detect(int_up, "^W"))
+
+c4<-bind_rows(c3.1, c3.2)
+
+cent1<-bind_rows(c4, cent)
+cent1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_cent <- tibble(Centrarchids_std=rep(c(-.50,.5),2),
+                    estimate=c("prob","prob", "WAE","WAE"),
+                    value=c(0,1,0,40))
 ggplot()+
-  geom_point(data=cent, aes(x=Centrarchids_std, y=CPUE2), alpha=0.3)+
-  geom_line(data=cent_meanqi,aes(x=Centrarchids_std, y=.epred), size=1)+
-  geom_ribbon(data=cent_meanqi,aes(x=Centrarchids_std, y=.epred,ymin=.epred.lower, ymax=.epred.upper), alpha=0.4)+
-  theme_classic()+
-  xlab("Stock-length centrarchid CPTN") +
-  ylab("Age-2 Walleye CPGN")+
+  geom_point(data=subset(cent1, estimate=="WAE"), aes(x=Centrarchids_std, y=CPUE2), alpha=0.3)+
+  geom_ribbon(data=c4, aes(y=value, x=Centrarchids_std, ymin=int_lower, ymax=int_upper), alpha=0.5)+
+  geom_line(data=c4,aes(x=Centrarchids_std, y=value), size=1)+
+  geom_blank(data=dummy_cent,aes(y=value))+
+  xlab("Stock-length Centrarchid CPTN")+
+  ylab(NULL)+
+  scale_fill_manual(values=c("black", "gray"),name = NULL)+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
   scale_x_continuous(labels=c(0,100,200,300, 400, 500), 
                      breaks=c(((0-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
                               ((100-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
@@ -539,9 +755,12 @@ ggplot()+
                               ((300-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
                               ((400-mean(cent$Centrarchids))/sd(cent$Centrarchids)), 
                               ((500-mean(cent$Centrarchids))/sd(cent$Centrarchids))))+
+  theme_classic()+
   theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))+
-  ylim(0,40)
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
 
 ############################################################
 ##### Saugeye lakes
@@ -583,22 +802,7 @@ posts_sae <- add_epred_draws(sae_mod, re_formula = NA,
   group_by(SppStocked) %>% 
   mean_qi(.epred, hu))
 
-#plot
-posts_sae %>% 
-  ggplot(aes(x=factor(SppStocked, level=c("c_Saugeye","b_Walleye","a_none")), y=.epred))+
-  geom_violin(trim=F, fill="gray50")+
-  xlab("Species Stocked")+ 
-  ylab("Age-2 CPGN")+
-  scale_x_discrete(breaks=c("c_Saugeye","b_Walleye","a_none"),
-                   labels=c("Saugeye", "Walleye", "None"))+
-  theme_classic()+ 
-  #annotate("text", x=1.5, y=10, label= expression(R^2~"= 0.236"), size=6)+
-  scale_fill_grey(start=0, end=.65)+
-  ylim(c(0,15))+
-  theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14))
-
-#Probabilites
+#Probabilities
 posts_sae2<-posts_sae %>%  
   ungroup() %>% 
   select(.draw, SppStocked, .epred) %>% 
@@ -608,3 +812,46 @@ posts_sae2<-posts_sae %>%
 sum(posts_sae2$S2W>0)/4000
 sum(posts_sae2$S2N>0)/4000
 
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "WAE")
+
+sae1<-posts_sae %>%
+  rename(prob=hu, WAE=.epred) %>% 
+  pivot_longer(cols=c(prob, WAE), names_to ="estimate") %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+saugeye1<-bind_rows(sae1, SAE)
+saugeye1 %<>% mutate(estimate=replace_na(estimate, "WAE"))
+
+dummy_sae <- tibble(SppStocked=c(rep("c_Saugeye",4), rep("b_Walleye",4),rep("a_none",4)),
+                     estimate=rep(c("prob","prob", "WAE","WAE"),3),
+                     value=rep(c(0,1,0,30),3))
+saugeye1 %>% 
+  ggplot(aes(x=factor(SppStocked, level=c("c_Saugeye","b_Walleye","a_none")), y=value))+
+  geom_violin(fill='gray50',trim=F)+
+  geom_point(data=subset(saugeye1, estimate=="WAE"), aes(y=CPUE2), alpha=0.3, position = position_jitter(width=0.1))+
+  geom_blank(data=dummy_sae, aes(y=value))+
+  ylab(NULL)+
+  xlab("Species Stocked")+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  scale_x_discrete(breaks=c("c_Saugeye","b_Walleye","a_none"),
+                   labels=c("Saugeye", "Walleye", "None"))+
+  theme_classic()+
+  theme(axis.text = element_text(size=12), 
+        axis.title = element_text(size=14),
+        strip.background = element_blank(),
+        strip.text = element_text(size=14),
+        strip.placement = "outside")
+
+###############
+# plot all hu plots together
+###############
+final<-grid.arrange(hu_plot_stock, hu_plot_ST, hu_plot_mp, hu_plot_water, 
+             hu_plot_env, hu_plot_wae, hu_plot_cent, hu_plot_sae, 
+             ncol=2, left = textGrob("Probability of age-2 Walleye CPGN=0", gp=gpar(fontsize=14), rot=90));final
+
+ggsave(plot = final, "Probability that age-2 Walleye CPGN equals zero_letters.jpeg", width=10, height=7, dpi=600, units="in")
+ 
