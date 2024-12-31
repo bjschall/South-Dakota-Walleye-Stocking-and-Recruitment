@@ -267,12 +267,19 @@ posts_water <- add_epred_draws(water_mod, re_formula = NA,
                                  allow_new_levels = TRUE, dpar=T)
 
 #probability 
+#small vs large sizes - probability
 posts_water_wide<-posts_water %>%  
+  filter(Hectares_std==(122.91396-mean(wae3$Hectares))/sd(wae3$Hectares)|
+           Hectares_std==max(posts_water$Hectares_std)|
+           Hectares_std==(1537.28405237537-mean(wae3$Hectares))/sd(wae3$Hectares)|
+           Hectares_std==min(posts_water$Hectares_std)) %>% 
   ungroup() %>% 
-  select(.draw, Type,Hectares_std, .epred) %>% 
-  pivot_wider(names_from = Type, values_from=.epred) %>% 
-  mutate(diffC_M = `Consistent` - `Marginal`)
-sum(posts_water_wide$diffC_M>0)/400000
+  select(.draw, Type, Hectares_std, .epred) %>% 
+  pivot_wider(names_from = c(Type, Hectares_std), values_from=.epred) %>% 
+  mutate(Con_Max.Min=`Consistent_3.4501826248895`-`Consistent_-0.652258772628929`, 
+         Marg_Max.Min=`Marginal_0.159958425913175`-`Marginal_-0.607486591240254`); posts_water_wide
+sum(posts_water_wide$Con_Max.Min>0)/4000
+sum(posts_water_wide$Marg_Max.Min>0)/4000
 
 #summarize mean and 95% CrI - consistent water range
 (water_meanqi<-posts_water %>%
@@ -608,7 +615,7 @@ p3 <- ggplot()+
 
 p_comb<-cowplot::plot_grid(p2, p3, p1, ncol=1, rel_heights = c(0.374, 0.313, 0.313)); p_comb
 
-ggsave("Figure 6. Environmental Variables.jpeg",plot = p_comb,width=7, height=9,units = "in",dpi = 600)
+ggsave("Figure 5. Environmental Variables.jpeg",plot = p_comb,width=7, height=9,units = "in",dpi = 600)
 
 ############################################################
 ####### Stock-size Walleye
@@ -898,6 +905,19 @@ nop_meanqi <- posts_nop %>%
 
 tail(nop_meanqi)
 filter(nop_meanqi, NOP.S_std==(23.5-mean(nop$NOP.S))/sd(nop$NOP.S))
+
+#probability
+posts_nop_wide<-posts_nop %>%  
+  filter(NOP.S_std==(0-mean(nop$NOP.S))/sd(nop$NOP.S)|
+           NOP.S_std==(29-mean(nop$NOP.S))/sd(nop$NOP.S)|
+           NOP.S_std==(23.5-mean(nop$NOP.S))/sd(nop$NOP.S)) %>% 
+  ungroup() %>% 
+  select(.draw, Type, NOP.S_std, .epred) %>% 
+  pivot_wider(names_from = c(Type, NOP.S_std), values_from=.epred) %>% 
+  mutate(Con_Max.Min=`Consistent_8.12037599695267`-`Consistent_-0.649959914721481`, 
+         Marg_Max.Min=`Marginal_6.45703642749723`-`Marginal_-0.649959914721481`); posts_nop_wide
+1-sum(posts_nop_wide$Con_Max.Min>0)/4000
+1-sum(posts_nop_wide$Marg_Max.Min>0)/4000
 
 #double plot
 labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
