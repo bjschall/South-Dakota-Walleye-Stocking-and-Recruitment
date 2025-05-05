@@ -12,1056 +12,1187 @@ library(ggh4x)
 ###### Access data
 wae3<-read.csv("wae.final.csv",header=T)
 
-wae3 %>% group_by(Type,Waterbody, County) %>% summarize(mean(Effort_Age2CatchYear),
+mod_comp<-wae3 %>% filter(!is.na(Centrarchids) & !is.na(NOP.S)) %>% 
+  mutate(Centrarchids_std=(Centrarchids-mean(Centrarchids))/sd(Centrarchids), 
+         NOP.S_std=(NOP.S-mean(NOP.S))/sd(NOP.S))
+
+mod_comp %>% group_by(Waterbody, County) %>% summarize(mean(Effort_Age2CatchYear),
                                                    sd(Effort_Age2CatchYear), 
                                                    mean(Hectares),
                                                    length(Waterbody2), 
                                                    min(CPUE2),
                                                    max(CPUE2)) %>% print(n=94)
-wae3 %>% group_by(GNType_Age2Survey) %>% summarize(max(Effort_Age2CatchYear),min(Effort_Age2CatchYear), mean(Effort_Age2CatchYear))
 
-wae3 %>% group_by(Type) %>% summarize(length(CPUE2))
-###########################################################
-###### Plotting stocking size distribution
-wae3 %>% mutate(Density=NumStockedperAcre/0.404686) %>% 
-  group_by(Size) %>% 
-  summarize(MEAN=mean(Density), 
-            SD=sd(Density),
-            MIN=min(Density),
-            MAX=max(Density),
-            N=length(Density)) %>% 
-  as.data.frame()
-
-############################################################
-###### Stocked vs Type model
-#identify priors
-get_prior(CPUE2~Stocked*Type + (1|Waterbody2),
-          data=wae3, family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"))
-
-#model
-set.seed(100)
-stock_mod<- brm(bf(CPUE2~Stocked * Type + (1|Waterbody2),
-                   hu~Stocked * Type + (1|Waterbody2)),
-                data=wae3, 
-                prior = c(prior(normal(1,0.5), class = "Intercept"),
-                          prior(normal(1, 0.5), class = "b"),
-                          prior(normal(0, 2), class="b", dpar="hu"),
-                          prior(exponential(1), class="sd"),
-                          prior(exponential(2), class="shape")),
-                family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-                file="Stocked_Type.rds",
-                chains=4, iter=2000, cores=4)
+mod_comp %>% group_by(GNType_Age2Survey) %>% summarize(mean(Effort_Age2CatchYear), min(Effort_Age2CatchYear), max(Effort_Age2CatchYear))
+###############################################################################################################################
+Size <- brm(bf(CPUE2~Size2 + (1|Waterbody2),
+              hu~Size2 + (1|Waterbody2)),
+           data=mod_comp, 
+           prior = c(prior(normal(1, 2), class="Intercept"),
+                     prior(normal(0, 10), class="Intercept", dpar="hu"),
+                     prior(normal(0, 3), class="b"),
+                     prior(normal(0, 6), class="b", dpar="hu"),
+                     prior(exponential(0.1), class="sd"),
+                     prior(exponential(2), class = "shape")),
+           family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+           save_pars = save_pars(all=T),
+           file_refit = "on_change",
+           file="Size.rds", 
+           chains=4, iter=2000, cores=4)
 
 #model summary and checks
-summary(stock_mod)
-bayes_R2(stock_mod)
-pp_check(stock_mod, ndraws = 10,type = "boxplot")+theme_classic()
+summary(Size)
+bayes_R2(Size)
+pp_check(Size)
+plot(Size)
+#loo_size<-loo(Size, moment_match = T) #calculated and saved for convenience
+loo_size
 
-#Sample posterior for magnitude of difference
-posts.stock <- add_epred_draws(stock_mod, re_formula = NA,
-                               newdata = stock_mod$data %>% distinct(Stocked, Type) %>% 
-                                 mutate(Waterbody2 = "New_Lake"),
-                               allow_new_levels = TRUE, dpar=T)
+#Cent + NOP model
+preds<-brm(bf(CPUE2~NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                hu~NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+             data=mod_comp, 
+             prior = c(prior(normal(1, 2), class="Intercept"),
+                       prior(normal(0, 10), class="Intercept", dpar="hu"),
+                       prior(normal(0, 3), class="b"),
+                       prior(normal(0, 6), class="b", dpar="hu"),
+                       prior(exponential(0.1), class="sd"),
+                       prior(exponential(2), class = "shape")),
+             family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+             save_pars = save_pars(all=T),
+             file_refit = "on_change",
+             file="preds.rds",
+             chains=4, iter=2000, cores=4)
 
-#calculate means and 95% quantile-based CrI
-qi<-posts.stock%>% 
-  mean_qi();as.data.frame(qi)
+#model summary and checks
+summary(preds)
+bayes_R2(preds)
+pp_check(preds)
+plot(preds)
+#loo_preds<-loo(preds, moment_match = T) #calculated and saved for convenience
+loo_preds
 
-#Estimate probabilities of differences between groups
-posts_wide<-posts.stock %>%  
-  ungroup() %>% 
-  select(.draw, Stocked,Type, .epred) %>% 
-  pivot_wider(names_from = c(Stocked, Type), values_from=.epred) %>% 
-  mutate(YN_Cons=Y_Consistent-N_Consistent,
-         YN_Marg=Y_Marginal-N_Marginal,
-         YY_ConsMarg=Y_Consistent-Y_Marginal,
-         NN_ConsMarg=N_Consistent-N_Marginal)
-sum(posts_wide$YN_Cons>0)/4000
-sum(posts_wide$YN_Marg>0)/4000
-sum(posts_wide$YY_ConsMarg>0)/4000
-sum(posts_wide$NN_ConsMarg>0)/4000
+#Waterbody surface area
+area<-brm(bf(CPUE2 ~ Hectares_std  + (1|Waterbody2),
+                  hu ~ Hectares_std   + (1|Waterbody2)),
+               data=mod_comp, 
+               family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+               prior = c(prior(normal(1, 2), class="Intercept"),
+                         prior(normal(0, 10), class="Intercept", dpar="hu"),
+                         prior(normal(0, 3), class="b"),
+                         prior(normal(0, 6), class="b", dpar="hu"),
+                         prior(exponential(0.1), class="sd"),
+                         prior(exponential(2), class = "shape")),
+               save_pars = save_pars(all=T),
+               file_refit = "on_change",
+               file="area.rds",
+               chains=4, iter=2000, cores=4)
 
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
+#model summary and checks
+summary(area)
+bayes_R2(area)
+pp_check(area)
+plot(area)
+#loo_area<-loo(area, moment_match = T) #calculated and saved for convenience
+loo_area
 
-po1<-posts.stock %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate") %>% 
-  as.data.frame() %>% 
-  select(-Waterbody2)
-
-po1<-bind_rows(po1, wae3)
-po1 %<>% mutate(estimate=replace_na(estimate, "CPGN"))
-
-dummy <- tibble(Stocked=rep(c("Y","N"),4),
-                Type=c(rep("Marginal",4), rep("Consistent",4)), 
-                estimate=rep(c("prob","prob", "CPGN","CPGN"),2),
-                value=rep(c(0,0.6,0,40),2))
-
-po1 %>% mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
-  ggplot(aes(x=factor(Stocked, level=c("Y", "N")), y=value, fill=Type))+
-  geom_point(data=subset(po1, estimate=="CPGN"&CPUE2>0), aes(y=CPUE2,group=Type), alpha=0.2, position = position_jitterdodge(jitter.width = .05, dodge.width = 0.9))+
-  geom_violin(trim=F, alpha=0.9)+
-  geom_text(aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  scale_fill_grey(start=.65, end=.20, name = NULL)+
-  ylab(NULL)+
-  xlab(NULL)+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_discrete(breaks=c("Y","N"),labels=c("Stocked", "Not Stocked"), limits=c("Y", "N"))+
-  theme_classic()+
-  geom_blank(data=dummy)+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside")
-
-
-ggsave("Figure 2. Stocked by Type2.jpeg",width=6, height=4,units = "in",dpi = 600)
-
-############################################################
-###### Size  of stocked products * waterbody type
-#exclude all non-stocked years from analysis
-st <- filter(wae3, Size2!="a_no")
-
-length(st$Waterbody)
-#get prior 
-get_prior(bf(CPUE2~Size2*Type + (1|Waterbody2),
-             hu~Size2*Type + (1|Waterbody2)),
-          data=st, family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"))
-
-#model
-set.seed(101)
-S_T <- brm(bf(CPUE2~Size2 * Type + (1|Waterbody2),
-            hu~Size2 * Type + (1|Waterbody2)),
-         data=st, 
-         prior = c(prior(normal(1.5, 0.5), class="Intercept"),
-                   prior(normal(0, 1), class="b"),
-                   prior(normal(0, 2), class="b", dpar="hu"),
-                   prior(exponential(1), class="sd"),
+#Environmental variables
+env<-brm(bf(CPUE2~ (GDD_std  + SpringPrecip_std + WSI_std) + (1|Waterbody2),
+            hu~ (GDD_std  + SpringPrecip_std + WSI_std)  + (1|Waterbody2)),
+         data=mod_comp, 
+         prior = c(prior(normal(1, 2), class="Intercept"),
+                   prior(normal(0, 10), class="Intercept", dpar="hu"),
+                   prior(normal(0, 3), class="b"),
+                   prior(normal(0, 6), class="b", dpar="hu"),
+                   prior(exponential(0.1), class="sd"),
                    prior(exponential(2), class = "shape")),
          family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-         file="Size_Type.rds", 
+         save_pars = save_pars(all=T),
+         file_refit="on_change",
+         file="Env_mod.rds",
          chains=4, iter=2000, cores=4)
-
-#model summary and check
-summary(S_T)
-bayes_R2(S_T)
-pp_check(S_T)
-plot(S_T)
-
-#Sample from posterior
-posts_S_T <- add_epred_draws(S_T, re_formula = NA,
-                          newdata = S_T$data %>% distinct(Size2, Type) %>% 
-                            mutate(Waterbody2 = "New_Lake"),
-                          allow_new_levels = TRUE, dpar=T)
-
-#calculate means and 95% quantile-based CrI
-qi_S_T<-posts_S_T %>% 
-  mean_qi();qi_S_T %>% as.data.frame()
-
-#Estimate probabilities of differences among groups
-posts_S_T_wide<-posts_S_T %>%  
-  ungroup() %>% 
-  select(.draw, Size2, Type, .epred) %>% 
-  pivot_wider(names_from = c(Size2, Type), values_from=.epred) %>% 
-  mutate(FrySF_C=d_fr_Consistent-c_sf_Consistent,
-         FryLF_C=d_fr_Consistent-b_lf_Consistent,
-         FrySF_M=d_fr_Marginal-c_sf_Marginal,
-         FryLF_M=d_fr_Marginal-b_lf_Marginal,
-         LFSF_C=b_lf_Consistent-c_sf_Consistent,
-         LFSF_M=b_lf_Marginal-c_sf_Marginal,
-         Fry_CM = d_fr_Consistent-d_fr_Marginal,
-         SF_CM = c_sf_Consistent - c_sf_Marginal, 
-         LF_CM = b_lf_Consistent - b_lf_Marginal)
-#compare fry to Smfgl and lgfgl in consistent and marginal water status
-sum(posts_S_T_wide$FrySF_C>0)/4000
-sum(posts_S_T_wide$FryLF_C>0)/4000
-sum(posts_S_T_wide$FrySF_M>0)/4000
-sum(posts_S_T_wide$FryLF_M>0)/4000
-#Compare consistent vs marginal for each product type
-sum(posts_S_T_wide$Fry_CM>0)/4000
-sum(posts_S_T_wide$SF_CM>0)/4000
-sum(posts_S_T_wide$LF_CM>0)/4000
-
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
-
-type1<-posts_S_T %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate") %>% 
-  as.data.frame() %>% 
-  select(-Waterbody2)
-
-sizetype<-bind_rows(type1, wae3)
-sizetype %<>% mutate(estimate=replace_na(estimate, "CPGN"))
-
-dummy_ST <- tibble(Size2=rep(c("d_fr", "c_sf", "b_lf", ""),2),
-                   Type=c(rep("Marginal",4), rep("Consistent",4)), 
-                  estimate=rep(c("prob","prob", "CPGN","CPGN"),2),
-                  value=rep(c(0,0.5,0,40),2))
-
-sizetype %>% mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
-  ggplot(aes(x=factor(Size2, level=c("d_fr", "c_sf", "b_lf")), y=value, fill=Type))+
-  geom_point(data=subset(sizetype, estimate=="CPGN"&CPUE2>0), aes(y=CPUE2,group=Type), alpha=0.3, position = position_jitterdodge(jitter.width = .05, dodge.width = 0.9))+
-  geom_violin(trim=F, alpha=0.9)+
-  geom_text(aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Size at stocking")+
-  ylab(NULL)+
-  scale_fill_grey(start=.65, end=.2, name = NULL)+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_discrete(breaks=c("b_lf","c_sf", "d_fr"),
-                   limits=c( "d_fr","c_sf","b_lf"),
-                   labels=c("   Large Fingerling", "Small Fingerling   ", "Fry"))+
-  geom_blank(data=dummy_ST)+
-  theme_classic()+
-  theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14),
-        strip.background = element_blank(),
-        strip.text = element_text(size=14),
-        strip.placement = "outside")
-ggsave("Figure 3. Stocking size.jpeg",width=10, height=4,units = "in",dpi = 600)
-
-############################################################
-###### Surface Area
-wae3 %>% group_by(Waterbody, County, Type) %>% 
-  summarize(mean(Hectares), mean(Hectares_std)) %>% 
-  arrange(`mean(Hectares)`) %>% as.data.frame() 
-
-wae3 %>% summarize(mean(Hectares), sd(Hectares))
-wae3 %>% group_by(Type) %>% summarize(max(Hectares), min(Hectares))
-#model
-set.seed(104)
-water_mod<-brm(bf(CPUE2 ~ Hectares_std * Type  + (1|Waterbody2),
-           hu ~ Hectares_std * Type   + (1|Waterbody2)),
-        data=wae3, 
-        family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-        prior = c(prior(normal(1, 0.5), class="Intercept"),
-                  prior(normal(0, 0.5), class="b"), 
-                  prior(normal(0,2), class="b", dpar="hu"),
-                  prior(exponential(0.1), class="sd"),
-                  prior(exponential(0.5), class = "shape")),
-        file="Waterbody_Char.rds",
-        chains=4, iter=2000, cores=4)
-
-conditional_effects(water_mod)
-#summary and model check
-summary(water_mod)
-bayes_R2(water_mod)
-pp_check(water_mod)
-plot(water_mod)
-
-#sample from posterior
-posts_water <- add_epred_draws(water_mod, re_formula = NA,
-                                 newdata = tibble(expand.grid(Hectares_std=c(seq(min(wae3$Hectares_std), 
-                                                                               max(wae3$Hectares_std),
-                                                                               length.out=98),
-                                                                             (122.91396-mean(wae3$Hectares))/sd(wae3$Hectares),
-                                                                             (1537.28405237537-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                                                  Type = unique(wae3$Type))) %>% 
-                                   mutate(Waterbody2 = "New_Lake"),
-                                 allow_new_levels = TRUE, dpar=T)
-
-#probability 
-#small vs large sizes - probability
-posts_water_wide<-posts_water %>%  
-  filter(Hectares_std==(122.91396-mean(wae3$Hectares))/sd(wae3$Hectares)|
-           Hectares_std==max(posts_water$Hectares_std)|
-           Hectares_std==(1537.28405237537-mean(wae3$Hectares))/sd(wae3$Hectares)|
-           Hectares_std==min(posts_water$Hectares_std)) %>% 
-  ungroup() %>% 
-  select(.draw, Type, Hectares_std, .epred) %>% 
-  pivot_wider(names_from = c(Type, Hectares_std), values_from=.epred) %>% 
-  mutate(Con_Max.Min=`Consistent_3.4501826248895`-`Consistent_-0.652258772628929`, 
-         Marg_Max.Min=`Marginal_0.159958425913175`-`Marginal_-0.607486591240254`); posts_water_wide
-sum(posts_water_wide$Con_Max.Min>0)/4000
-sum(posts_water_wide$Marg_Max.Min>0)/4000
-
-#summarize mean and 95% CrI - consistent water range
-(water_meanqi<-posts_water %>%
-  select(.draw, Hectares_std, Type, .epred, hu) %>% 
-  group_by(Hectares_std, Type) %>% 
-  mean_qi(.epred, hu))
-
-tail(water_meanqi)
-filter(water_meanqi, Hectares_std==(122.91396-mean(wae3$Hectares))/sd(wae3$Hectares)) #smallest consistent water
-filter(water_meanqi, Hectares_std==(1537.28405237537-mean(wae3$Hectares))/sd(wae3$Hectares))
-
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
-
-w1<- water_meanqi %>%
-  dplyr::rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate")
-
-w2<- w1 %>%
-  dplyr::rename(prob.lower=hu.lower, prob.upper=hu.upper, CPGN.upper=.epred.upper, CPGN.lower=.epred.lower) %>% 
-  pivot_longer(cols=c(prob.lower,  CPGN.lower), names_to ="int_low", values_to = "int_lower")
-w3<- w2 %>% 
-  pivot_longer(cols=c(prob.upper,  CPGN.upper), names_to ="int_up", values_to = "int_upper")
-
-w3.1<-w3 %>% filter(estimate=="prob" & 
-              str_detect(int_low, "^p")& 
-              str_detect(int_up, "^p"))
-w3.2<-w3 %>% filter(estimate=="CPGN" & 
-                      str_detect(int_low, "^C")& 
-                      str_detect(int_up, "^C"))
-
-w4<-bind_rows(w3.1, w3.2)
-
-water1<-bind_rows(w4, wae3)
-water1 %<>% mutate(estimate=replace_na(estimate, "CPGN"))
-
-dummy_w <- tibble(Hectares=rep(c(-.50,.5),4),
-                  Type=c(rep("Consistent",4), rep("Marginal",4)), 
-                  estimate=rep(c("prob","prob", "CPGN","CPGN"),2),
-                  value=rep(c(0,0.4,0,40),2))
-
-water1 %>% mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>%  
-  ggplot()+
-  geom_point(data=subset(water1, estimate=="CPGN"&CPUE2>0), aes(x=Hectares_std, y=CPUE2, group=Type, shape=Type, fill=Type), size=1.2, alpha=0.3)+
-  geom_ribbon(data=filter(w4, Type=="Consistent"&Hectares_std>-0.607|Type=="Marginal"&Hectares_std<0.160), aes(y=value, x=Hectares_std, ymin=int_lower, ymax=int_upper,fill=Type), alpha=0.5)+
-  geom_line(data=filter(w4, Type=="Consistent"&Hectares_std>-0.607|Type=="Marginal"&Hectares_std<0.160),aes(x=Hectares_std, y=value, linetype=Type), linewidth=1)+
-  geom_blank(data=dummy_w, aes(y=value))+
-  geom_text(aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Surface area (hectares)")+
-  ylab(NULL)+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_continuous(limits=c(-0.6741804,3.667),
-                     labels=c("0", "2,000", "4,000", "6,000", "8,000"), 
-                     breaks=c(((0-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                              ((2000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                              ((4000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                              ((6000-mean(wae3$Hectares))/sd(wae3$Hectares)),
-                              ((8000-mean(wae3$Hectares))/sd(wae3$Hectares))))+
-  theme_classic()+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside", 
-        legend.position = "top")
-
-ggsave("Figure 4. Surface Area.jpeg",width=6, height=4,units = "in",dpi = 600)
-
-############################################################
-######Environmental variables
-wae3 %>% summarize(mean(GDD), sd(GDD), mean(SpringPrecip), sd(SpringPrecip), mean(WSI), sd(WSI), length(CPUE2))
-
-#get prior
-get_prior(bf(CPUE2~ (GDD_std  + SpringPrecip_std + WSI_std) * Type + (1|Waterbody2),
-             hu~ (GDD_std + SpringPrecip_std + WSI_std) * Type + (1|Waterbody2)),
-          data=wae3, family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"))
-
-#model
-set.seed(105)
-env<-brm(bf(CPUE2~ (GDD_std  + SpringPrecip_std + WSI_std) * Type + (1|Waterbody2),
-           hu~ (GDD_std  + SpringPrecip_std + WSI_std) * Type + (1|Waterbody2)),
-        data=wae3, 
-        prior = c(prior(normal(1, 0.5), class="Intercept"),
-                  prior(normal(1, 0.5), coef="WSI_std"),
-                  prior(normal(1, 0.5), coef="GDD_std"),
-                  prior(normal(1, 0.5), coef="SpringPrecip_std"), 
-                  prior(normal(0, 2), class="b", dpar="hu"),
-                  prior(exponential(2), class="sd"),
-                  prior(exponential(2), class = "shape")),
-        family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-        file="Env_mod.rds",
-        chains=4, iter=2000, cores=4)
 
 #model summary and checks
 summary(env)
 bayes_R2(env)
 pp_check(env)
 plot(env)
+#loo_env<-loo(env, moment_match = T) #calculated and saved for convenience
+loo_env
 
-#Sample posterior for magnitude of difference
-#Then estimate mean and 95% qi across range of values for each variable
-
-#GDD
-wae3 %>% group_by(Type) %>% summarize(min(GDD), max(GDD)) 
-
-posts_env_gdd <- add_epred_draws(env, re_formula = NA,
-                             newdata = tibble(expand.grid(GDD_std=c(seq(min(wae3$GDD_std), 
-                                                                      max(wae3$GDD_std),
-                                                                      length.out=97),
-                                                                    (1914-mean(wae3$GDD))/sd(wae3$GDD),
-                                                                    (1939-mean(wae3$GDD))/sd(wae3$GDD),
-                                                                    (2717-mean(wae3$GDD))/sd(wae3$GDD)),
-                                              SpringPrecip_std=0,
-                                              WSI_std = 0, 
-                                              Type=unique(wae3$Type)))%>% 
-                             mutate(Waterbody2 = "New_Lake"),
-                             allow_new_levels = TRUE, dpar=T)
-
-posts_env_GDD <-posts_env_gdd %>%
-  select(.draw, GDD_std, SpringPrecip_std, Type, WSI_std, .epred, hu) %>% 
-  group_by(GDD_std, Type) %>% 
-  mean_qi(.epred, hu) %>% 
-  rename(Predictor = GDD_std) %>% 
-  mutate(Parameter = "GDD_std"); posts_env_GDD
-
-tail(posts_env_GDD)
-posts_env_GDD %>% filter(Predictor==(2717-mean(wae3$GDD))/sd(wae3$GDD))
-
-#WSI
-wae3 %>% group_by(Type) %>% summarize(min(WSI), max(WSI))
-
-posts_env_wsi <- add_epred_draws(env, re_formula = NA,
-                             newdata = tibble(expand.grid(GDD_std=0,
-                                              SpringPrecip_std=0,
-                                              WSI_std = c(seq(min(wae3$WSI_std), 
-                                                            max(wae3$WSI_std),
-                                                            length.out=98), 
-                                                          (-422-mean(wae3$WSI))/sd(wae3$WSI),
-                                                          (-478-mean(wae3$WSI))/sd(wae3$WSI)),
-                                              Type=unique(wae3$Type))) %>% 
-                               mutate(Waterbody2 = "New_Lake"),
-                             allow_new_levels = TRUE, dpar=T)
-
-posts_env_WSI <- posts_env_wsi %>%
-  select(.draw, GDD_std, SpringPrecip_std, Type, WSI_std, .epred, hu) %>% 
-  group_by(WSI_std, Type) %>% 
-  mean_qi(.epred, hu) %>% 
-  rename(Predictor = WSI_std) %>% 
-  mutate(Parameter = "WSI_std"); posts_env_WSI
-
-tail(posts_env_WSI)
-posts_env_WSI %>% filter(Predictor==(-422-mean(wae3$WSI))/sd(wae3$WSI))
-
-#Spring Precip
-wae3 %>% group_by(Type) %>% summarize(min(SpringPrecip), max(SpringPrecip))
-
-posts_env_sp <- add_epred_draws(env, re_formula = NA,
-                                 newdata = tibble(expand.grid(GDD_std=0,
-                                                  SpringPrecip_std=seq(min(wae3$SpringPrecip_std), 
-                                                                       max(wae3$SpringPrecip_std),
-                                                                       length.out=100),
-                                                  WSI_std = 0,
-                                                  Type=unique(wae3$Type))) %>% 
-                                   mutate(Waterbody2 = "New_Lake"),
-                                 allow_new_levels = TRUE, dpar=T)
-
-posts_env_SP <- posts_env_sp %>%
-  select(.draw, GDD_std, SpringPrecip_std, Type, WSI_std, .epred, hu) %>% 
-  group_by(SpringPrecip_std, Type) %>% 
-  mean_qi(.epred, hu) %>% 
-  rename(Predictor = SpringPrecip_std) %>% 
-  mutate(Parameter = "SpringPrecip_std"); posts_env_SP
-
-tail(posts_env_SP)
-
-env_dat<-bind_rows(posts_env_GDD, posts_env_WSI,posts_env_SP)
-
-#evaluate trends in hu parameter
-posts_env_GDD %>% 
-  ggplot(aes(x=Predictor, y=hu, group=Type))+
-  geom_line()+
-  geom_ribbon(aes(ymin=hu.lower, ymax=hu.upper), alpha=0.3)+
-  theme_classic()
-
-posts_env_WSI %>% 
-  ggplot(aes(x=Predictor, y=hu, group=Type))+
-  geom_line()+
-  geom_ribbon(aes(ymin=hu.lower, ymax=hu.upper), alpha=0.3)+
-  theme_classic()
-
-posts_env_SP %>% 
-  ggplot(aes(x=Predictor, y=hu, group=Type))+
-  geom_line()+
-  geom_ribbon(aes(ymin=hu.lower, ymax=hu.upper), alpha=0.3)+
-  theme_classic()
-
-#plot all three relationships and combine into one figure
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
-
-e1<- env_dat %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate")
-
-e2<- e1 %>%
-  rename(prob.lower=hu.lower, prob.upper=hu.upper, CPGN.upper=.epred.upper, CPGN.lower=.epred.lower) %>% 
-  pivot_longer(cols=c(prob.lower,  CPGN.lower), names_to ="int_low", values_to = "int_lower") %>% 
-  pivot_longer(cols=c(prob.upper,  CPGN.upper), names_to ="int_up", values_to = "int_upper")
-
-e2.1<-e2 %>% filter(estimate=="prob" & 
-                        str_detect(int_low, "^p")& 
-                        str_detect(int_up, "^p"))
-e2.2<-e2 %>% filter(estimate=="CPGN" & 
-                        str_detect(int_low, "^C")& 
-                        str_detect(int_up, "^C"))
-
-e3<-bind_rows(e2.1, e2.2)
-env_wae <- wae3 %>% pivot_longer(cols = c(SpringPrecip_std,GDD_std, WSI_std), names_to = "Parameter", values_to = "Predictor")
-
-env1.1<-bind_rows(e3, env_wae)
-env1 <- env1.1 %>% mutate(estimate=replace_na(estimate, "CPGN"))
-
-env1$ab=ifelse(env1.1$Parameter=="GDD_std",recode(env1.1$estimate, "prob"="B", "CPGN"="A"),
-                           ifelse(env1.1$Parameter=="WSI_std",
-                                  recode(env1.1$estimate, "prob"="D", "CPGN"="C"),
-                                  recode(env1.1$estimate, "prob"="F", "CPGN"="E")))
-
-dummy_env <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
-                    estimate=rep(c("prob","prob", "CPGN","CPGN"),3),
-                    value=rep(c(0,0.3,0,40),3))
-
-p <- "SpringPrecip_std"
-
-p1 <- ggplot()+
-  geom_point(data=subset(env1, estimate=="CPGN"&is.na(.interval)&Parameter==p&CPUE2>0), aes(x=Predictor, y=CPUE2, group=Type, shape=Type, fill=Type), size=1, alpha=0.3)+
-  geom_ribbon(data=subset(e3, Parameter==p), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper, fill=Type), alpha=0.5)+
-  geom_line(data=subset(e3, Parameter==p),aes(x=Predictor, y=value, linetype=Type), linewidth=1)+
-  geom_blank(data=subset(dummy_env, Parameter==p), aes(y=value))+
-  geom_text(data=subset(env1, Parameter==p),aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Spring precipitation (mm)")+
-  ylab(NULL)+
-  scale_x_continuous(labels=c("100", "200", "300", "400", "500"), 
-                     breaks=c(((100-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                              ((200-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                              ((300-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                              ((400-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip)),
-                              ((500-mean(wae3$SpringPrecip))/sd(wae3$SpringPrecip))),
-                     limits=c(-1.5,5))+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free",strip.position = "left", 
-             labeller= labeller(estimate=labs), ncol=2)+
-  theme_classic()+
-  guides(fill="none", linetype="none", pch="none")+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside");p1
-
-#
-dummy_env2 <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
-                    estimate=rep(c("prob","prob", "CPGN","CPGN"),3),
-                    value=rep(c(0,0.5,0,40),3))
-q <- "GDD_std"
-
-p2 <- ggplot()+
-  geom_point(data=subset(env1, estimate=="CPGN"&is.na(.interval)&Parameter==q&CPUE2>0), aes(x=Predictor, y=CPUE2, group=Type, shape=Type, fill=Type), size=1, alpha=0.3)+
-  geom_ribbon(data=subset(e3, Parameter==q&Type=="Marginal"&estimate=="CPGN"&Predictor>-2.218&Predictor<2.586|Parameter==q&Type=="Marginal"&estimate=="prob"&Predictor>-2.331&Predictor<2.586|Parameter==q&Type=="Consistent"), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper, fill=Type), alpha=0.5)+
-  geom_line(data=subset(e3, Parameter==q&Type=="Marginal"&estimate=="CPGN"&Predictor>-2.218&Predictor<2.586|Parameter==q&Type=="Marginal"&estimate=="prob"&Predictor>-2.331&Predictor<2.586|Parameter==q&Type=="Consistent"),aes(x=Predictor, y=value, linetype=Type), linewidth=1)+
-  geom_blank(data=subset(dummy_env2, Parameter==q), aes(y=value))+
-  geom_text(data=subset(env1, Parameter==q),aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Growing degree days (GDD)")+
-  ylab(NULL)+
-  scale_x_continuous(labels=c("1900", "2200","2500", "2800"), 
-                     breaks=c(((1900-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2200-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2500-mean(wae3$GDD))/sd(wae3$GDD)),
-                              ((2800-mean(wae3$GDD))/sd(wae3$GDD))))+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free",strip.position = "left", 
-             labeller= labeller(estimate=labs), ncol=2)+
-  theme_classic()+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside", 
-        legend.position = "top");p2
-#
-dummy_env3 <- tibble(Parameter=c(rep("GDD_std",4),rep("WSI_std",4),rep("SpringPrecip_std",4)),
-                     estimate=rep(c("prob","prob", "CPGN","CPGN"),3),
-                     value=rep(c(0,0.42,0,40),3))
-r <- "WSI_std"
-       
-p3 <- ggplot()+
-  geom_point(data=subset(env1, estimate=="CPGN"&is.na(.interval)&Parameter==q&CPUE2>0), aes(x=Predictor, y=CPUE2, group=Type, shape=Type, fill=Type), size=1, alpha=0.3)+
-  geom_ribbon(data=subset(e3, Parameter==r&Type=="Marginal"&estimate=="CPGN"&Predictor<2.01|Parameter==r&Type=="Marginal"&estimate=="prob"&Predictor<2.158|Parameter==r&Type=="Consistent"), aes(y=value, x=Predictor, ymin=int_lower, ymax=int_upper, fill=Type), alpha=0.5)+
-  geom_line(data=subset(e3, Parameter==r&Type=="Marginal"&estimate=="CPGN"&Predictor<2.01|Parameter==r&Type=="Marginal"&estimate=="prob"&Predictor<2.158|Parameter==r&Type=="Consistent"),aes(x=Predictor, y=value, linetype=Type), linewidth=1)+
-  geom_blank(data=subset(dummy_env2, Parameter==q), aes(y=value))+
-  geom_text(data=subset(env1, Parameter==q),aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Winter severity index (WSI))")+
-  ylab(NULL)+
-  scale_x_continuous(labels=c("-2,000", "-1,500", "-1,000", "-500"), 
-                     breaks=c(((-2000-mean(wae3$WSI))/sd(wae3$WSI)),
-                              ((-1500-mean(wae3$WSI))/sd(wae3$WSI)),
-                              ((-1000-mean(wae3$WSI))/sd(wae3$WSI)),
-                              ((-500-mean(wae3$WSI))/sd(wae3$WSI))))+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free",strip.position = "left", 
-             labeller= labeller(estimate=labs), ncol=2)+
-  theme_classic()+
-  guides(fill="none", linetype="none", pch="none")+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside");p3
-
-p_comb<-cowplot::plot_grid(p2, p3, p1, ncol=1, rel_heights = c(0.374, 0.313, 0.313)); p_comb
-
-ggsave("Figure 5. Environmental Variables.jpeg",plot = p_comb,width=7, height=9,units = "in",dpi = 600)
-
-############################################################
-####### Stock-size Walleye
-#filter data
-adultWAE<-wae3 %>% filter(!is.na(WAE.S)) %>%   
-  filter(Stocked=="N"&Type=="Consistent")%>% 
-  mutate(WAE.S=as.numeric(WAE.S),
-         WAE_adj=(WAE.S-mean(WAE.S))/sd(WAE.S)) 
-
-adultWAE %>% summarize(mean(WAE.S), sd(WAE.S), length(WAE.S), length(unique(Waterbody2)))
-adultWAE %>% filter(GNType_Age2Survey=="AFS") %>% summarize(length(WAE.S))
-adultWAE %>% filter(GNType_cohort.year=="AFS std gill net") %>% summarize(length(WAE.S))
-
-#model
-set.seed(106)
-wae_mod<-brm(bf(CPUE2~ WAE_adj  + (1|Waterbody2),
-                hu~WAE_adj  + (1|Waterbody2)),
-             data=adultWAE, 
-             prior = c(prior(normal(1.5, 0.5), class="Intercept"),
-                       prior(normal(0, 1), class="b"), 
-                       prior(normal(0, 2), class="b", dpar="hu"),
-                       prior(exponential(0.5), class="sd"),
-                       prior(exponential(0.5), class = "shape")),
+#Size + Env
+Size_env <- brm(bf(CPUE2~Size2 + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                hu~Size2 + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+             data=mod_comp, 
+             prior = c(prior(normal(1, 2), class="Intercept"),
+                       prior(normal(0, 10), class="Intercept", dpar="hu"),
+                       prior(normal(0, 3), class="b"),
+                       prior(normal(0, 6), class="b", dpar="hu"),
+                       prior(exponential(0.1), class="sd"),
+                       prior(exponential(2), class = "shape")),
              family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-             file="Adult_WAE.rds",
+             save_pars = save_pars(all=T),
+             file_refit = "on_change",
+             file="Size_env.rds", 
              chains=4, iter=2000, cores=4)
 
 #model summary and checks
-print(summary(wae_mod), digits=4)
-bayes_R2(wae_mod)
-pp_check(wae_mod)
-plot(wae_mod)
-posterior_table(wae_mod)
+summary(Size_env)
+bayes_R2(Size_env)
+pp_check(Size_env)
+plot(Size_env)
+#loo_size_env<-loo(Size_env, moment_match = T) #calculated and saved for convenience
+loo_size_env
 
-#sample posterior
-posts_wae <- add_epred_draws(wae_mod, re_formula = NA,
-                              newdata = tibble(WAE_adj=seq(min(adultWAE$WAE_adj),
-                                                           max(adultWAE$WAE_adj),
-                                                           length.out=100)) %>% 
-                                mutate(Waterbody2 = "New_Lake"),
-                              allow_new_levels = TRUE, dpar=T)
-
-
-#summarize means and 95% CrI
-wae_meanqi <- posts_wae %>%
-  select(.draw, WAE_adj, .epred, hu) %>% 
-  group_by(WAE_adj) %>% 
-  mean_qi(.epred, hu); wae_meanqi
-
-tail(wae_meanqi)
-
-#probability that slope is >0
-wae_mod %>% spread_draws(b_WAE_adj) %>% summarize(`Prob>0`=(sum(b_WAE_adj>0))/4000)
-
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
-
-st1<- wae_meanqi %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate")
-
-st2<- st1 %>%
-  rename(prob.lower=hu.lower, prob.upper=hu.upper, CPGN.upper=.epred.upper, CPGN.lower=.epred.lower) %>% 
-  pivot_longer(cols=c(prob.lower,  CPGN.lower), names_to ="int_low", values_to = "int_lower")
-st3<- st2 %>% 
-  pivot_longer(cols=c(prob.upper,  CPGN.upper), names_to ="int_up", values_to = "int_upper")
-
-st3.1<-st3 %>% filter(estimate=="prob" & 
-                      str_detect(int_low, "^p")& 
-                      str_detect(int_up, "^p"))
-st3.2<-st3 %>% filter(estimate=="CPGN" & 
-                      str_detect(int_low, "^C")& 
-                      str_detect(int_up, "^C"))
-
-st4<-bind_rows(st3.1, st3.2)
-
-st_wae1<-bind_rows(st4, adultWAE)
-st_wae1 %<>% mutate(estimate=replace_na(estimate, "CPGN"),
-                    ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) 
-
-dummy_wae <- tibble(WAE_adj=rep(c(-.50,.5),2),
-                  estimate=c("prob","prob", "CPGN","CPGN"),
-                  value=c(0,1,0,30))
-wae.plot <- ggplot()+
-  geom_ribbon(data=st4, aes(y=value, x=WAE_adj, ymin=int_lower, ymax=int_upper), alpha=0.5)+
-  geom_line(data=st4,aes(x=WAE_adj, y=value), linewidth=1)+
-  geom_point(data=subset(st_wae1, estimate=="CPGN"&CPUE2>0), aes(x=WAE_adj, y=CPUE2), size=1.2, alpha=0.3)+
-  geom_blank(data=dummy_wae, aes(y=value))+
-  geom_text(data=st_wae1,aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Stock-length Walleye CPGN")+
-  ylab(NULL)+
-  scale_fill_manual(values=c("black", "gray"),name = NULL)+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_continuous(labels=c(0, 25, 50, 75, 100), 
-                                  breaks=c(((0-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
-                                  ((25-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
-                                  ((50-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
-                                  ((75-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)),
-                                  ((100-mean(adultWAE$WAE.S))/sd(adultWAE$WAE.S)))) +
-  theme_classic()+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside");wae.plot
-
-ggsave("Figure 6. Stock-Length Walleye.jpeg",width=6, height=4,units = "in",dpi = 600)
-
-############################################################
-##### Centrarchids
-# Filter data to only include waters with sampled centrarchids
-cent<-wae3 %>% filter(!is.na(Centrarchids)) %>% 
-  mutate(Centrarchids_std=(Centrarchids-mean(Centrarchids))/sd(Centrarchids))
-
-cent %>% summarize(length(Centrarchids), max(Centrarchids), min(Centrarchids),
-                   mean(Centrarchids), sd(Centrarchids), length(unique(Waterbody2)))
-cent %>% group_by(Type) %>% summarize(min(Centrarchids), max(Centrarchids))
-cent %>% filter(Centrarchids>0) %>% group_by(Type) %>% summarize(min(Centrarchids), max(Centrarchids))
-
-#model
-set.seed(107)
-cent_mod<-brm(bf(CPUE2~ Centrarchids_std * Type + (1|Waterbody2),
-           hu~Centrarchids_std * Type + (1|Waterbody2)),
-        data=cent, 
-        prior = c(prior(normal(1.5, 0.5), class="Intercept"),
-                  prior(normal(-1, 1), class="b"), 
-                  prior(normal(0,2), class="b", dpar="hu"),
-                  prior(exponential(0.5), class="sd"),
-                  prior(exponential(0.5), class = "shape")),
-        family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-        file="Cent_mod.rds",
-        chains=4, iter=2000, cores=4)
+#Size + Area
+Size_area <- brm(bf(CPUE2~Size2 + Hectares_std + (1|Waterbody2),
+                    hu~Size2 + Hectares_std + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="Size_area.rds", 
+                 chains=4, iter=2000, cores=4)
 
 #model summary and checks
-summary(cent_mod)
-bayes_R2(cent_mod)
-pp_check(cent_mod)
-plot(cent_mod)
+summary(Size_area)
+bayes_R2(Size_area)
+pp_check(Size_area)
+plot(Size_area)
+#loo_size_area<-loo(Size_area, moment_match = T) #calculated and saved for convenience
+loo_size_area
 
-#Sample posterior for magnitude of difference
-#GDD
-posts_cent <- add_epred_draws(cent_mod, re_formula = NA,
-                                 newdata = tibble(expand.grid(Centrarchids_std=c(seq(min(cent$Centrarchids_std), 
-                                                                       max(cent$Centrarchids_std),
-                                                                       length.out=98), 
-                                                                       (98.5-mean(cent$Centrarchids))/sd(cent$Centrarchids),
-                                                                       (245.4-mean(cent$Centrarchids))/sd(cent$Centrarchids)), 
-                                                  Type=unique(cent$Type))) %>% 
-                                   mutate(Waterbody2 = "New_Lake"),
-                                 allow_new_levels = TRUE, dpar=T)
-
-#mean and 95% quantile interval
-cent_meanqi <- posts_cent %>%
-  select(.draw, Centrarchids_std,Type, .epred, hu) %>% 
-  group_by(Centrarchids_std, Type) %>% 
-  mean_qi(.epred, hu); cent_meanqi
-
-tail(cent_meanqi)
-
-cent_meanqi %>% filter(Centrarchids_std==(245.4-mean(cent$Centrarchids))/sd(cent$Centrarchids))
-cent_meanqi %>% filter(Centrarchids_std==(98.5-mean(cent$Centrarchids))/sd(cent$Centrarchids))
-
-#probability 
-posts_cent_wide<-posts_cent %>%  
-   filter(Centrarchids_std==(0-mean(cent$Centrarchids))/sd(cent$Centrarchids)|
-           Centrarchids_std==(98.5-mean(cent$Centrarchids))/sd(cent$Centrarchids)|
-           Centrarchids_std==(245.4-mean(cent$Centrarchids))/sd(cent$Centrarchids)) %>% 
-  ungroup() %>% 
-  select(.draw, Type, Centrarchids_std, .epred) %>% 
-  pivot_wider(names_from = c(Type, Centrarchids_std), values_from=.epred) %>% 
-  mutate(Con_Max.Min=`Consistent_2.2649721964845`-`Consistent_-0.417859805566624`, 
-         Marg_Max.Min=`Marginal_6.2660688574115`-`Marginal_-0.417859805566624`); posts_cent_wide
-1-sum(posts_cent_wide$Con_Max.Min>0)/4000
-1-sum(posts_cent_wide$Marg_Max.Min>0)/4000
-
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
-
-c1<- cent_meanqi %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate")
-
-c2<- c1 %>%
-  rename(prob.lower=hu.lower, prob.upper=hu.upper, CPGN.upper=.epred.upper, CPGN.lower=.epred.lower) %>% 
-  pivot_longer(cols=c(prob.lower,  CPGN.lower), names_to ="int_low", values_to = "int_lower")
-c3<- c2 %>% 
-  pivot_longer(cols=c(prob.upper,  CPGN.upper), names_to ="int_up", values_to = "int_upper")
-
-c3.1<-c3 %>% filter(estimate=="prob" & 
-                        str_detect(int_low, "^p")& 
-                        str_detect(int_up, "^p"))
-c3.2<-c3 %>% filter(estimate=="CPGN" & 
-                        str_detect(int_low, "^C")& 
-                        str_detect(int_up, "^C"))
-
-c4<-bind_rows(c3.1, c3.2)
-c4.1 <- c4 %>% filter(Centrarchids_std<6.3&Type=="Marginal"|Type=="Consistent")
-
-cent1<-bind_rows(c4, cent)
-cent1 %<>% mutate(estimate=replace_na(estimate, "CPGN"),
-                  ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A")))
-
-dummy_cent <- tibble(Centrarchids_std=rep(c(-.50,.5),2),
-                    estimate=c("prob","prob", "CPGN","CPGN"),
-                    value=c(0,1,0,40))
-ggplot()+
-  geom_ribbon(data=filter(c4.1, Type=="Consistent"&estimate=="CPGN"&Centrarchids_std<2.265|Type=="Marginal"|estimate=="prob"), aes(y=value, x=Centrarchids_std, ymin=int_lower, ymax=int_upper, fill=Type), alpha=0.5)+
-  geom_line(data=filter(c4.1, Type=="Consistent"&estimate=="CPGN"&Centrarchids_std<2.265|Type=="Marginal"|estimate=="prob"),aes(x=Centrarchids_std, y=value, linetype=Type), linewidth=1)+
-  geom_point(data=subset(cent1, estimate=="CPGN"&CPUE2>0), aes(x=Centrarchids_std, y=CPUE2, group=Type, shape=Type, fill=Type), size=1.2, alpha=0.3)+
-  geom_blank(data=dummy_cent,aes(y=value))+
-  geom_text(data=cent1,aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Stock-length Centrarchid CPFN")+
-  ylab(NULL)+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_continuous(labels=c(0,100,200,300, 400, 500), 
-                     breaks=c(((0-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
-                              ((100-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
-                              ((200-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
-                              ((300-mean(cent$Centrarchids))/sd(cent$Centrarchids)),
-                              ((400-mean(cent$Centrarchids))/sd(cent$Centrarchids)), 
-                              ((500-mean(cent$Centrarchids))/sd(cent$Centrarchids))))+
-  theme_classic()+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside", 
-        legend.position = "top")
-
-
-ggsave("Figure 7. Stock-Length Centrarchids.jpeg",width=6, height=4,units = "in",dpi = 600)
-
-###########################################################
-##### Northern Pike
-# Filter data to only include waters with sampled Northern Pike
-nop<-wae3 %>% filter(!is.na(NOP.All)) %>% 
-  mutate(NOP.All_std=(NOP.All-mean(NOP.All))/sd(NOP.All),
-         NOP.S_std=(NOP.S-mean(NOP.S))/sd(NOP.S))
-
-nop %>% group_by(GNType_cohort.year) %>% summarize(length(CPUE2))
-nop %>% summarize(mean(NOP.S), sd(NOP.S), length(unique(nop$Waterbody2)))
-nop %>% group_by(Type) %>% summarize(min(NOP.S), max(NOP.S))
-#model
-set.seed(108)
-nop_mod<-brm(bf(CPUE2~NOP.S_std*Type + (1|Waterbody2),
-                 hu~NOP.S_std*Type + (1|Waterbody2)),
-              data=nop, 
-              prior = c(prior(normal(1.5, 0.5), class="Intercept"),
-                        prior(normal(-1,1), class="b"), 
-                        prior(normal(0,2), class="b", dpar="hu"),
-                        prior(exponential(0.5), class="sd"),
-                        prior(exponential(0.5), class = "shape")),
-              family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-              file="NOP_mod.rds",
-              chains=4, iter=2000, cores=4)
+#Area + Cent + NOP
+Area_pred <- brm(bf(CPUE2~Hectares_std + Centrarchids_std + NOP.S_std + (1|Waterbody2),
+                     hu~Hectares_std + Centrarchids_std + NOP.S_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Area_pred.rds", 
+                  chains=4, iter=2000, cores=4)
 
 #model summary and checks
-summary(nop_mod)
-bayes_R2(nop_mod)
-pp_check(nop_mod)
-plot(nop_mod)
+summary(Area_pred)
+bayes_R2(Area_pred)
+pp_check(Area_pred)
+plot(Area_pred)
+#loo_area_pred<-loo(Area_pred, moment_match = T) #calculated and saved for convenience
+loo_area_pred
 
-#Sample posterior for magnitude of difference
-#GDD
-posts_nop <- add_epred_draws(nop_mod, re_formula = NA,
-                              newdata = tibble(expand.grid(NOP.S_std=c(seq(min(nop$NOP.S_std), 
-                                                                    max(nop$NOP.S_std),
-                                                                    length.out=99),
-                                                                    (23.5-mean(nop$NOP.S))/sd(nop$NOP.S)), 
-                                               Type=unique(nop$Type))) %>% 
-                                mutate(Waterbody2 = "New_Lake"),
-                              allow_new_levels = TRUE, dpar=T)
+#Area + env
+Area_env <- brm(bf(CPUE2~Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                     hu~Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                          prior(normal(0, 10), class="Intercept", dpar="hu"),
+                          prior(normal(0, 3), class="b"),
+                          prior(normal(0, 6), class="b", dpar="hu"),
+                          prior(exponential(0.1), class="sd"),
+                          prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Area_env.rds", 
+                  chains=4, iter=2000, cores=4)
 
-#mean and 95% quantile interval
-nop_meanqi <- posts_nop %>%
-  select(.draw, NOP.S_std, Type, .epred, hu) %>% 
-  group_by(NOP.S_std, Type) %>% 
-  mean_qi(.epred, hu); nop_meanqi
+#model summary and checks
+summary(Area_env)
+bayes_R2(Area_env)
+pp_check(Area_env)
+plot(Area_env)
+#loo_area_env<-loo(Area_env, moment_match = T) #calculated and saved for convenience
+loo_area_env
 
-tail(nop_meanqi)
-filter(nop_meanqi, NOP.S_std==(23.5-mean(nop$NOP.S))/sd(nop$NOP.S))
+#Cent + NOP + env
+Pred_env <- brm(bf(CPUE2~Centrarchids_std + NOP.S_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                    hu~Centrarchids_std + NOP.S_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                          prior(normal(0, 10), class="Intercept", dpar="hu"),
+                          prior(normal(0, 3), class="b"),
+                          prior(normal(0, 6), class="b", dpar="hu"),
+                          prior(exponential(0.1), class="sd"),
+                          prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="Pred_env.rds", 
+                 chains=4, iter=2000, cores=4)
 
-#probability
-posts_nop_wide<-posts_nop %>%  
-  filter(NOP.S_std==(0-mean(nop$NOP.S))/sd(nop$NOP.S)|
-           NOP.S_std==(29-mean(nop$NOP.S))/sd(nop$NOP.S)|
-           NOP.S_std==(23.5-mean(nop$NOP.S))/sd(nop$NOP.S)) %>% 
-  ungroup() %>% 
-  select(.draw, Type, NOP.S_std, .epred) %>% 
-  pivot_wider(names_from = c(Type, NOP.S_std), values_from=.epred) %>% 
-  mutate(Con_Max.Min=`Consistent_8.12037599695267`-`Consistent_-0.649959914721481`, 
-         Marg_Max.Min=`Marginal_6.45703642749723`-`Marginal_-0.649959914721481`); posts_nop_wide
-1-sum(posts_nop_wide$Con_Max.Min>0)/4000
-1-sum(posts_nop_wide$Marg_Max.Min>0)/4000
+#model summary and checks
+summary(Pred_env)
+bayes_R2(Pred_env)
+pp_check(Pred_env)
+plot(Pred_env)
+#loo_pred_env<-loo(Pred_env, moment_match = T) #calculated and saved for convenience
+loo_pred_env
 
-#double plot
-labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
-names(labs) <- c("prob", "CPGN")
+#Size + Env + Area
+Size_env_area <- brm(bf(CPUE2~Size2 + GDD_std  + SpringPrecip_std + WSI_std + Hectares_std + (1|Waterbody2),
+                    hu~Size2 + GDD_std  + SpringPrecip_std + WSI_std + Hectares_std + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="Size_env_area.rds", 
+                 chains=4, iter=2000, cores=4)
 
-n1<- nop_meanqi %>%
-  rename(prob=hu, CPGN=.epred) %>% 
-  pivot_longer(cols=c(prob, CPGN), names_to ="estimate")
+#model summary and checks
+summary(Size_env_area)
+bayes_R2(Size_env_area)
+pp_check(Size_env_area)
+plot(Size_env_area)
+#loo_size_env_area<-loo(Size_env_area, moment_match = T) #calculated and saved for convenience
+loo_size_env_area
 
-n2<- n1 %>%
-  rename(prob.lower=hu.lower, prob.upper=hu.upper, CPGN.upper=.epred.upper, CPGN.lower=.epred.lower) %>% 
-  pivot_longer(cols=c(prob.lower,  CPGN.lower), names_to ="int_low", values_to = "int_lower")
-n3<- n2 %>% 
-  pivot_longer(cols=c(prob.upper,  CPGN.upper), names_to ="int_up", values_to = "int_upper")
+#Size + Env +  Cent + NOP
+Size_env_pred <- brm(bf(CPUE2~Size2 + GDD_std  + SpringPrecip_std + WSI_std + NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                hu~Size2 + GDD_std  + SpringPrecip_std + WSI_std + NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+             data=mod_comp, 
+             prior = c(prior(normal(1, 2), class="Intercept"),
+                       prior(normal(0, 10), class="Intercept", dpar="hu"),
+                       prior(normal(0, 3), class="b"),
+                       prior(normal(0, 6), class="b", dpar="hu"),
+                       prior(exponential(0.1), class="sd"),
+                       prior(exponential(2), class = "shape")),
+             family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+             save_pars = save_pars(all=T),
+             file_refit = "on_change",
+             file="Size_env_pred.rds", 
+             chains=4, iter=2000, cores=4)
 
-n3.1<-n3 %>% filter(estimate=="prob" & 
-                      str_detect(int_low, "^p")& 
-                      str_detect(int_up, "^p"))
-n3.2<-n3 %>% filter(estimate=="CPGN" & 
-                      str_detect(int_low, "^C")& 
-                      str_detect(int_up, "^C"))
+#model summary and checks
+summary(Size_env_pred)
+bayes_R2(Size_env_pred)
+pp_check(Size_env_pred)
+plot(Size_env_pred)
+#loo_Size_env_pred<-loo(Size_env_pred, moment_match = T) #calculated and saved for convenience
+loo_Size_env_pred
 
-n4<-bind_rows(n3.1, n3.2)
+#Size + Area +  Cent + NOP
+Size_area_pred <- brm(bf(CPUE2~Size2 + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                         hu~Size2 + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Size_area_pred.rds", 
+                      chains=4, iter=2000, cores=4)
 
-nop1<-bind_rows(n4, nop)
-nop1 %<>% mutate(estimate=replace_na(estimate, "CPGN"),
-                 ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A")))
+#model summary and checks
+summary(Size_area_pred)
+bayes_R2(Size_area_pred)
+pp_check(Size_area_pred)
+plot(Size_area_pred)
+#loo_Size_area_pred<-loo(Size_area_pred, moment_match = T) #calculated and saved for convenience
+loo_Size_area_pred
 
-dummy_nop <- tibble(NOP.S_std=rep(c(-.50,.5),2),
-                     estimate=c("prob","prob", "CPGN","CPGN"),
-                     value=c(0,1,0,40))
-ggplot()+
-  geom_ribbon(data=filter(n4, Type=="Marginal"&estimate=="CPGN"&NOP.S_std<6.458|Type=="Consistent"|estimate=="prob"&Type=="Consistent"|estimate=="prob"&Type=="Marginal"&NOP.S_std<6.458), aes(y=value, x=NOP.S_std, ymin=int_lower, ymax=int_upper, fill=Type), alpha=0.5)+
-  geom_line(data=filter(n4, Type=="Marginal"&estimate=="CPGN"&NOP.S_std<6.458|Type=="Consistent"|estimate=="prob"&Type=="Consistent"|estimate=="prob"&Type=="Marginal"&NOP.S_std<6.458),aes(x=NOP.S_std, y=value, linetype=Type), linewidth=1)+
-  geom_point(data=subset(nop1, estimate=="CPGN"&CPUE2>0), aes(x=NOP.S_std, y=CPUE2, group=Type, shape=Type, fill=Type), size=1.2, alpha=0.3)+
-  geom_blank(data=dummy_nop,aes(y=value))+
-  geom_text(data=nop1, aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab("Stock-length Northern Pike CPGN")+
-  ylab(NULL)+
-  scale_colour_manual(values=c("black","gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_fill_manual(values=c("black", "gray"),name = NULL, labels=c("Consistent", "Marginal"))+
-  scale_linetype_manual(values=c(1,2), name=NULL,labels=c("Consistent", "Marginal"))+
-  scale_shape_manual(values=c(19,22),name=NULL,labels=c("Consistent", "Marginal"))+
-  facet_wrap(~estimate, scales="free", strip.position = "left", 
-             labeller= labeller(estimate=labs))+
-  scale_x_continuous(labels=c(0,10,20,30, 40, 50), 
-                     breaks=c(((0-mean(nop$NOP.S))/sd(nop$NOP.S)),
-                              ((10-mean(nop$NOP.S))/sd(nop$NOP.S)),
-                              ((20-mean(nop$NOP.S))/sd(nop$NOP.S)),
-                              ((30-mean(nop$NOP.S))/sd(nop$NOP.S)),
-                              ((40-mean(nop$NOP.S))/sd(nop$NOP.S)), 
-                              ((50-mean(nop$NOP.S))/sd(nop$NOP.S))))+
-  theme_classic()+
-  theme(axis.text = element_text(size=8), 
-        axis.title = element_text(size=10),
-        strip.background = element_blank(),
-        strip.text = element_text(size=10),
-        strip.placement = "outside", 
-        legend.position = "top")
+#Area + Env +  Cent + NOP
+Area_env_pred <- brm(bf(CPUE2~Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                         hu~Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Area_env_pred.rds", 
+                      chains=4, iter=2000, cores=4)
 
-ggsave("Figure 8. Stock-Length Northern Pike.jpeg",width=6, height=4,units = "in",dpi = 600)
+#model summary and checks
+summary(Area_env_pred)
+bayes_R2(Area_env_pred)
+pp_check(Area_env_pred)
+plot(Area_env_pred)
+#loo_Area_env_pred<-loo(Area_env_pred, moment_match = T) #calculated and saved for convenience
+loo_Area_env_pred
 
-############################################################
-###############  Supplementary Materials  ##################
-############################################################
-###### Management purpose
-#exclude non-stocked years
-mgmt<-filter(wae3, ManagementPurpose !="None")
+#Size + Env + Area + preds
+Full <- brm(bf(CPUE2~Size2 + GDD_std  + SpringPrecip_std + WSI_std + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                         hu~Size2 + GDD_std  + SpringPrecip_std + WSI_std + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Full.rds", 
+                      chains=4, iter=2000, cores=4)
 
-# model
-set.seed(102)
-mp<-brm(bf(CPUE2 ~ ManagementPurpose + (1|Waterbody2),
-           hu ~ ManagementPurpose + (1|Waterbody2)),
-        data=mgmt, 
-        family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
-        prior = c(prior(normal(0,.5), class="b"),
-                  prior(exponential(1), class="sd"),
-                  prior(normal(1.5, .5), class="Intercept"),
-                  prior(exponential(0.5), class = "shape"), 
-                  prior(normal(0,2), class="b", dpar="hu")),
-        #sample_prior = "only",
-        file_refit="on_change",
-        file="Management_Purpose.rds",
-        chains=4, iter=2000, cores=4)
+#model summary and checks
+summary(Full)
+bayes_R2(Full)
+pp_check(Full)
+plot(Full)
+#loo_Full<-loo(Full, moment_match = T) #calculated and saved for convenience
+loo_Full
 
-#model summary and check
-summary(mp)
-bayes_R2(mp)
-pp_check(mp)
-plot(mp)
+
+#Size + Cent + NOP
+Size_pred <- brm(bf(CPUE2~Size2 + Centrarchids_std + NOP.S_std + (1|Waterbody2),
+                     hu~Size2 + Centrarchids_std + NOP.S_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                            prior(normal(0, 10), class="Intercept", dpar="hu"),
+                            prior(normal(0, 3), class="b"),
+                            prior(normal(0, 6), class="b", dpar="hu"),
+                            prior(exponential(0.1), class="sd"),
+                            prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_pred.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_pred)
+bayes_R2(Size_pred)
+pp_check(Size_pred)
+plot(Size_pred)
+#loo_size_pred<-loo(Size_pred, moment_match = T) #calculated and saved for convenience
+loo_size_pred
+
+#Cent
+Cent <- brm(bf(CPUE2~Centrarchids_std  + (1|Waterbody2),
+                     hu~ Centrarchids_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Cent.rds", 
+                  chains=4, iter=2000, cores=4)
+#model summary and checks
+summary(Cent)
+bayes_R2(Cent)
+pp_check(Cent)
+plot(Cent)
+#loo_cent<-loo(Cent, moment_match = T) #calculated and saved for convenience
+loo_cent
+
+#Size + Cent
+Size_Cent <- brm(bf(CPUE2~Size2 + Centrarchids_std  + (1|Waterbody2),
+                     hu~Size2 + Centrarchids_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_Cent.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent)
+bayes_R2(Size_Cent)
+pp_check(Size_Cent)
+plot(Size_Cent)
+#loo_size_cent<-loo(Size_Cent, moment_match = T) #calculated and saved for convenience
+loo_size_cent
+
+
+#Size + Cent + area
+Size_Cent_Area <- brm(bf(CPUE2~Size2 + Centrarchids_std + Hectares_std + (1|Waterbody2),
+                     hu~Size2 + Centrarchids_std + Hectares_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 2), class="Intercept"),
+                            prior(normal(0, 10), class="Intercept", dpar="hu"),
+                            prior(normal(0, 3), class="b"),
+                            prior(normal(0, 6), class="b", dpar="hu"),
+                            prior(exponential(0.1), class="sd"),
+                            prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_Cent_Area.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent_Area)
+bayes_R2(Size_Cent_Area)
+pp_check(Size_Cent_Area)
+plot(Size_Cent_Area)
+#loo_size_cent_area<-loo(Size_Cent_Area, moment_match = T) #calculated and saved for convenience
+loo_size_cent_area
+
+#Size + Cent + area + env
+Size_Cent_Area_Env <- brm(bf(CPUE2~Size2 + Centrarchids_std + Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                          hu~Size2 + Centrarchids_std + Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                       data=mod_comp, 
+                       prior = c(prior(normal(1, 2), class="Intercept"),
+                                 prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                 prior(normal(0, 3), class="b"),
+                                 prior(normal(0, 6), class="b", dpar="hu"),
+                                 prior(exponential(0.1), class="sd"),
+                                 prior(exponential(2), class = "shape")),
+                       family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                       save_pars = save_pars(all=T),
+                       file_refit = "on_change",
+                       file="Size_Cent_Area_Env.rds", 
+                       chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent_Area_Env)
+bayes_R2(Size_Cent_Area_Env)
+pp_check(Size_Cent_Area_Env)
+plot(Size_Cent_Area_Env)
+#loo_size_cent_area_env<-loo(Size_Cent_Area_Env, moment_match = T) #calculated and saved for convenience
+loo_size_cent_area_env
+
+#Size + Cent + env
+Size_Cent_Env <- brm(bf(CPUE2~Size2 + Centrarchids_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                        hu~Size2 + Centrarchids_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                     data=mod_comp, 
+                     prior = c(prior(normal(1, 2), class="Intercept"),
+                               prior(normal(0, 10), class="Intercept", dpar="hu"),
+                               prior(normal(0, 3), class="b"),
+                               prior(normal(0, 6), class="b", dpar="hu"),
+                               prior(exponential(0.1), class="sd"),
+                               prior(exponential(2), class = "shape")),
+                     family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                     save_pars = save_pars(all=T),
+                     file_refit = "on_change",
+                     file="Size_Cent_Env.rds", 
+                     chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent_Env)
+bayes_R2(Size_Cent_Env)
+pp_check(Size_Cent_Env)
+plot(Size_Cent_Env)
+#loo_size_cent_env<-loo(Size_Cent_Env, moment_match = T) #calculated and saved for convenience
+loo_size_cent_env
+
+
+#Cent + env + area
+Cent_Env_Area <- brm(bf(CPUE2~Size2 + Centrarchids_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                         hu~Size2 + Centrarchids_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Cent_Env_Area.rds", 
+                      chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Cent_Env_Area)
+bayes_R2(Cent_Env_Area)
+pp_check(Cent_Env_Area)
+plot(Cent_Env_Area)
+#loo_cent_env_area<-loo(Cent_Env_Area, moment_match = T) #calculated and saved for convenience
+loo_cent_env_area
+
+#Cent + env
+Cent_Env <- brm(bf(CPUE2~ Centrarchids_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                         hu~ Centrarchids_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Cent_Env.rds", 
+                      chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Cent_Env)
+bayes_R2(Cent_Env)
+pp_check(Cent_Env)
+plot(Cent_Env)
+#loo_cent_env<-loo(Cent_Env, moment_match = T) #calculated and saved for convenience
+loo_cent_env
+
+#Cent + area
+Cent_Area <- brm(bf(CPUE2~ Centrarchids_std +  Hectares_std + (1|Waterbody2),
+                    hu~ Centrarchids_std +  Hectares_std  + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="Cent_Area.rds", 
+                 chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Cent_Area)
+bayes_R2(Cent_Area)
+pp_check(Cent_Area)
+plot(Cent_Area)
+loo_cent_area<-loo(Cent_Area, moment_match = T) #calculated and saved for convenience
+loo_cent_area2
+
+#NOP
+NOP <- brm(bf(CPUE2~NOP.S_std  + (1|Waterbody2),
+               hu~ NOP.S_std + (1|Waterbody2)),
+            data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+            family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+            save_pars = save_pars(all=T),
+            file_refit = "on_change",
+            file="NOP.rds", 
+            chains=4, iter=2000, cores=4)
+#model summary and checks
+summary(NOP)
+bayes_R2(NOP)
+pp_check(NOP)
+plot(NOP)
+#loo_NOP<-loo(NOP, moment_match = T) #calculated and saved for convenience
+loo_NOP
+
+#Size + NOP
+Size_NOP <- brm(bf(CPUE2~Size2 + NOP.S_std  + (1|Waterbody2),
+                     hu~Size2 + NOP.S_std + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_NOP.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_NOP)
+bayes_R2(Size_NOP)
+pp_check(Size_NOP)
+plot(Size_NOP)
+#loo_size_NOP<-loo(Size_NOP, moment_match = T) #calculated and saved for convenience
+loo_size_NOP
+
+
+#Size + NOP + area
+Size_NOP_Area <- brm(bf(CPUE2~Size2 + NOP.S_std + Hectares_std + (1|Waterbody2),
+                          hu~Size2 + NOP.S_std + Hectares_std + (1|Waterbody2)),
+                       data=mod_comp, 
+                       prior = c(prior(normal(1, 2), class="Intercept"),
+                                 prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                 prior(normal(0, 3), class="b"),
+                                 prior(normal(0, 6), class="b", dpar="hu"),
+                                 prior(exponential(0.1), class="sd"),
+                                 prior(exponential(2), class = "shape")),
+                       family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                       save_pars = save_pars(all=T),
+                       file_refit = "on_change",
+                       file="Size_NOP_Area.rds", 
+                       chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_NOP_Area)
+bayes_R2(Size_NOP_Area)
+pp_check(Size_NOP_Area)
+plot(Size_NOP_Area)
+#loo_size_NOP_area<-loo(Size_NOP_Area, moment_match = T) #calculated and saved for convenience
+loo_size_NOP_area
+
+#Size + NOP + area + env
+Size_NOP_Area_Env <- brm(bf(CPUE2~Size2 + NOP.S_std + Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                              hu~Size2 + NOP.S_std + Hectares_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                           data=mod_comp, 
+                           prior = c(prior(normal(1, 2), class="Intercept"),
+                                     prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                     prior(normal(0, 3), class="b"),
+                                     prior(normal(0, 6), class="b", dpar="hu"),
+                                     prior(exponential(0.1), class="sd"),
+                                     prior(exponential(2), class = "shape")),
+                           family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                           save_pars = save_pars(all=T),
+                           file_refit = "on_change",
+                           file="Size_NOP_Area_Env.rds", 
+                           chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_NOP_Area_Env)
+bayes_R2(Size_NOP_Area_Env)
+pp_check(Size_NOP_Area_Env)
+plot(Size_NOP_Area_Env)
+#loo_size_NOP_area_env<-loo(Size_NOP_Area_Env, moment_match = T) #calculated and saved for convenience
+loo_size_NOP_area_env
+
+#Size + NOP + env
+Size_NOP_Env <- brm(bf(CPUE2~Size2 + NOP.S_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                         hu~Size2 + NOP.S_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="Size_NOP_Env.rds", 
+                      chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_NOP_Env)
+bayes_R2(Size_NOP_Env)
+pp_check(Size_NOP_Env)
+plot(Size_NOP_Env)
+#loo_size_NOP_env<-loo(Size_NOP_Env, moment_match = T) #calculated and saved for convenience
+loo_size_NOP_env
+
+
+# NOP + env + area
+NOP_Env_Area <- brm(bf(CPUE2~Size2 + NOP.S_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                         hu~Size2 + NOP.S_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                      data=mod_comp, 
+                      prior = c(prior(normal(1, 2), class="Intercept"),
+                                prior(normal(0, 10), class="Intercept", dpar="hu"),
+                                prior(normal(0, 3), class="b"),
+                                prior(normal(0, 6), class="b", dpar="hu"),
+                                prior(exponential(0.1), class="sd"),
+                                prior(exponential(2), class = "shape")),
+                      family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                      save_pars = save_pars(all=T),
+                      file_refit = "on_change",
+                      file="NOP_Env_Area.rds", 
+                      chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(NOP_Env_Area)
+bayes_R2(NOP_Env_Area)
+pp_check(NOP_Env_Area)
+plot(NOP_Env_Area)
+#loo_NOP_env_area<-loo(NOP_Env_Area, moment_match = T) #calculated and saved for convenience
+loo_NOP_env_area
+
+#NOP + env
+NOP_Env <- brm(bf(CPUE2~ NOP.S_std +  GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2),
+                    hu~ NOP.S_std + GDD_std  + SpringPrecip_std + WSI_std + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="NOP_Env.rds", 
+                 chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(NOP_Env)
+bayes_R2(NOP_Env)
+pp_check(NOP_Env)
+plot(NOP_Env)
+#loo_NOP_env<-loo(NOP_Env, moment_match = T) #calculated and saved for convenience
+loo_NOP_env
+
+#NOP + area
+NOP_Area <- brm(bf(CPUE2~ NOP.S_std +  Hectares_std + (1|Waterbody2),
+                    hu~ NOP.S_std +  Hectares_std  + (1|Waterbody2)),
+                 data=mod_comp, 
+                 prior = c(prior(normal(1, 2), class="Intercept"),
+                           prior(normal(0, 10), class="Intercept", dpar="hu"),
+                           prior(normal(0, 3), class="b"),
+                           prior(normal(0, 6), class="b", dpar="hu"),
+                           prior(exponential(0.1), class="sd"),
+                           prior(exponential(2), class = "shape")),
+                 family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                 save_pars = save_pars(all=T),
+                 file_refit = "on_change",
+                 file="NOP_Area.rds", 
+                 chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(NOP_Area)
+bayes_R2(NOP_Area)
+pp_check(NOP_Area)
+plot(NOP_Area)
+#loo_NOP_area<-loo(NOP_Area, moment_match = T) #calculated and saved for convenience
+loo_NOP_area
+
+#######################################################################################
+################################ Compare all models ###################################
+#######################################################################################
+loo_compare(loo_size, loo_env, loo_area, loo_preds, loo_size_env, loo_size_area, 
+            loo_area_env, loo_size_env_area, loo_size_pred, loo_pred_env, loo_area_pred,  
+            loo_Size_env_pred, loo_Size_area_pred, loo_Area_env_pred, loo_Full,  loo_cent, loo_cent_area,
+            loo_cent_env, loo_size_cent, loo_size_cent_area, loo_size_cent_area_env, loo_cent_env_area,
+            loo_size_cent_env, loo_NOP, loo_NOP_area, loo_NOP_env, loo_size_NOP, 
+            loo_size_NOP_area, loo_size_NOP_area_env, loo_NOP_env_area,loo_size_NOP_env)
+
+
+#######################################################################################
+#######################################################################################
+####################         Sensitivity Analysis          ############################
+#######################################################################################
+#######################################################################################
+
+#Size + Cent_sensitivity
+Size_Cent_sens <- brm(bf(CPUE2~Size2 + Centrarchids_std  + (1|Waterbody2),
+                     hu~Size2 + Centrarchids_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 4), class="Intercept"),
+                            prior(normal(0, 20), class="Intercept", dpar="hu"),
+                            prior(normal(0, 6), class="b"),
+                            prior(normal(0, 12), class="b", dpar="hu"),
+                            prior(exponential(0.05), class="sd"),
+                            prior(exponential(1), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_Cent_sens.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent_sens)
+bayes_R2(Size_Cent_sens)
+summary(Size_Cent)
+bayes_R2(Size_Cent)
+
+pp_check(Size_Cent_sens)
+plot(Size_Cent_sens)
+
+
+#Size + Cent + area
+Size_Cent_Area_sens <- brm(bf(CPUE2~Size2 + Centrarchids_std + Hectares_std + (1|Waterbody2),
+                          hu~Size2 + Centrarchids_std + Hectares_std + (1|Waterbody2)),
+                       data=mod_comp, 
+                       prior = c(prior(normal(1, 4), class="Intercept"),
+                                 prior(normal(0, 20), class="Intercept", dpar="hu"),
+                                 prior(normal(0, 6), class="b"),
+                                 prior(normal(0, 12), class="b", dpar="hu"),
+                                 prior(exponential(0.05), class="sd"),
+                                 prior(exponential(1), class = "shape")),
+                       family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                       save_pars = save_pars(all=T),
+                       file_refit = "on_change",
+                       file="Size_Cent_Area_sens.rds", 
+                       chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_Cent_Area_sens)
+summary(Size_Cent_Area)
+bayes_R2(Size_Cent_Area_sens)
+bayes_R2(Size_Cent_Area)
+
+pp_check(Size_Cent_Area2_sens)
+plot(Size_Cent_Area2_sens)
+
+
+#Size + preds
+Size_pred_sens <- brm(bf(CPUE2~Size2 + Centrarchids_std + NOP.S_std + (1|Waterbody2),
+                     hu~Size2 + Centrarchids_std + NOP.S_std + (1|Waterbody2)),
+                  data=mod_comp, 
+                  prior = c(prior(normal(1, 4), class="Intercept"),
+                            prior(normal(0, 20), class="Intercept", dpar="hu"),
+                            prior(normal(0, 6), class="b"),
+                            prior(normal(0, 12), class="b", dpar="hu"),
+                            prior(exponential(0.05), class="sd"),
+                            prior(exponential(1), class = "shape")),
+                  family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                  save_pars = save_pars(all=T),
+                  file_refit = "on_change",
+                  file="Size_pred_sens.rds", 
+                  chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_pred_sens)
+summary(Size_pred)
+
+bayes_R2(Size_pred_sens)
+bayes_R2(Size_pred)
+
+pp_check(Size_pred_sens)
+plot(Size_pred_sens)
+
+
+#Size + Area +  preds
+Size_area_pred_sens <- brm(bf(CPUE2~Size2 + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2),
+                          hu~Size2 + Hectares_std + NOP.S_std + Centrarchids_std + (1|Waterbody2)),
+                       data=mod_comp, 
+                       prior = c(prior(normal(1, 4), class="Intercept"),
+                                 prior(normal(0, 20), class="Intercept", dpar="hu"),
+                                 prior(normal(0, 6), class="b"),
+                                 prior(normal(0, 12), class="b", dpar="hu"),
+                                 prior(exponential(0.05), class="sd"),
+                                 prior(exponential(1), class = "shape")),
+                       family=hurdle_gamma(link="log", link_hu = "logit",link_shape = "log"),
+                       save_pars = save_pars(all=T),
+                       file_refit = "on_change",
+                       file="Size_area_pred_sens.rds", 
+                       chains=4, iter=2000, cores=4)
+
+#model summary and checks
+summary(Size_area_pred_sens)
+bayes_R2(Size_area_pred_sens)
+summary(Size_area_pred)
+bayes_R2(Size_area_pred)
+
+pp_check(Size_area_pred_sens)
+plot(Size_area_pred_sens)
+
+
+#######################################################################################
+#######################################################################################
+####################      Predict and plot top model       ############################
+#######################################################################################
+#######################################################################################
+summary(Size_Cent)
+
+mod_comp %>% group_by(Size2) %>% summarize(min(Centrarchids_std), max(Centrarchids_std)) %>% as.data.frame()
+mod_comp %>% filter(CPUE2>0) %>%  group_by(Size2) %>% summarize(min(Centrarchids_std), max(Centrarchids_std), length(Centrarchids_std))
+mod_comp %>% filter(CPUE2==0) %>%  group_by(Size2) %>% summarize(min(Centrarchids_std), max(Centrarchids_std), length(Centrarchids_std)) %>% as.data.frame()
 
 #Sample from posterior
-posts_mp <- add_epred_draws(mp, re_formula = NA,
-                            newdata = mp$data %>% distinct(ManagementPurpose) %>% 
-                              mutate(Waterbody2 = "New_Lake"),
-                            allow_new_levels = TRUE, dpar=T)
+posts_Size_Cent <- add_epred_draws(Size_Cent, re_formula = NA,
+                               newdata = tibble(expand.grid(Size2 = c("a_no","b_lf","c_sf","d_fr"),
+                                        Centrarchids_std = c(-0.4159660, 0, 1, 2),
+                                        Waterbody2 = "New_Lake")),
+                               allow_new_levels = TRUE, dpar=T)
 
 #calculate means and 95% quantile-based CrI
-qi_mp<-posts_mp %>% 
-  mean_qi() %>% 
-  as.data.frame;qi_mp
+qi_Size_Cent<-posts_Size_Cent %>%
+  mean_qi();qi_Size_Cent %>% as.data.frame()
+
+#probability that the slope parameter was negative
+Size_Cent %>% spread_draws(b_Centrarchids_std) %>% 
+  summarize(`Prob>0`=(sum(b_Centrarchids_std<0))/4000)
 
 #Estimate probabilities of differences among groups
-posts_mp_wide<-posts_mp %>%  
+posts_Size_Cent_wide<-posts_Size_Cent %>%  
   ungroup() %>% 
-  select(.draw, ManagementPurpose, .epred) %>% 
-  pivot_wider(names_from = ManagementPurpose, values_from=.epred) %>% 
-  mutate(SM = Supplemental - Maintenance)
-sum(posts_mp_wide$SM>0)/4000
-
+  select(.draw, Size2,Centrarchids_std, .epred) %>% 
+  pivot_wider(names_from = c(Size2, Centrarchids_std), values_from=.epred) %>% 
+  mutate(FryNo=`d_fr_0`-`a_no_0`,
+         SFNo=`c_sf_0`-`a_no_0`,
+         LFNo=`b_lf_0`-`a_no_0`, 
+         FrySF=`d_fr_0`-`c_sf_0`,
+         FryLF=`d_fr_0`-`b_lf_0`,
+         SFLF=`c_sf_0`-`b_lf_0`)
+(sum(posts_Size_Cent_wide$FryNo>0))/4000
+(sum(posts_Size_Cent_wide$SFNo>0))/4000
+(sum(posts_Size_Cent_wide$LFNo>0))/4000
+(sum(posts_Size_Cent_wide$FrySF>0))/4000
+(sum(posts_Size_Cent_wide$FryLF>0))/4000
+(sum(posts_Size_Cent_wide$SFLF>0))/4000
 
 #double plot
 labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
 names(labs) <- c("prob", "CPGN")
 
-mp1<-posts_mp %>%
+SC1<-posts_Size_Cent %>%
   rename(prob=hu, CPGN=.epred) %>% 
   pivot_longer(cols=c(prob, CPGN), names_to ="estimate") %>% 
+  mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
+  filter(Size2!="d_fr"|Size2=="d_fr"&Centrarchids_std==-0.4159660|Size2=="d_fr"&Centrarchids_std==0|Size2=="d_fr"&Centrarchids_std==1) %>% 
   as.data.frame() %>% 
   select(-Waterbody2)
 
-manage1<-bind_rows(mp1, wae3)
-manage1 %<>% mutate(estimate=replace_na(estimate, "CPGN"))
+sizecent<-bind_rows(SC1, mod_comp)
+sizecent %<>% mutate(estimate=replace_na(estimate, "CPGN"))
 
-dummy_MP <- tibble(ManagementPurpose=c("", "Maintenance", "Supplemental", ""),
-                   estimate=c("prob","prob", "CPGN","CPGN"),
-                   value=c(0,0.8,0,40))
+dummy_SC <- tibble(Size2=c("d_fr", "c_sf", "b_lf", "a_no"),
+                          estimate=c("prob","prob","CPGN","CPGN"),
+                          value=c(0,1,0,15))
+#####
+sizecent$ab=recode(sizecent$estimate, "prob"="B", "CPGN"="A")
 
-manage1 %>% mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
-  ggplot(aes(x=factor(ManagementPurpose,level=c("Maintenance", "Supplemental")), y=value))+
-  geom_point(data=subset(manage1, estimate=="CPGN"&CPUE2>0), aes(y=CPUE2), alpha=0.3, position = position_jitter(width=0.1))+
-  geom_violin(fill='gray50',trim=F, alpha=0.9)+
-  geom_blank(data=dummy_MP)+
-  geom_text(aes(label=ab,x=Inf, y=Inf),fontface = "bold", vjust=2, hjust=1)+
+cent_plot<-sizecent %>% 
+  ggplot()+
+  geom_violin(aes(x=Size2, y=value, fill=as.factor(Centrarchids_std), col=as.factor(Centrarchids_std)),alpha=0.9, position=position_dodge(width = .7))+
+  geom_text(aes(label=ab,x=0.7, y=Inf),fontface = "bold", vjust=2, hjust=1)+
+  xlab(NULL)+
   ylab(NULL)+
-  xlab("Mangagement purpose")+
-  scale_x_discrete(limits=c("Maintenance", "Supplemental"))+
+  scale_fill_manual(values=c("blue", "orange2", "#BB1250", "black"),name = "Centrarchid \nCPFN  ", labels=c("0", "14.8", "50.4", "86.0"))+
+  scale_color_manual(values=c("blue", "orange2", "#BB1250", "black"),name = "Centrarchid \nCPFN  ", labels=c("0", "14.8", "50.4", "86.0"))+
   facet_wrap(~estimate, scales="free", strip.position = "left", 
              labeller= labeller(estimate=labs))+
+  scale_x_discrete(breaks=c("b_lf","c_sf", "d_fr", "a_no"),
+                   limits=c( "d_fr","c_sf","b_lf", "a_no"),
+                   labels=c("   Large Fingerling", "Small Fingerling   ", "Fry", "   Not stocked"))+
+  geom_blank(data=dummy_SC, aes(y=value))+
   theme_classic()+
-  theme(axis.text = element_text(size=12), 
-        axis.title = element_text(size=14),
-        strip.background = element_blank(),
-        strip.text = element_text(size=14),
-        strip.placement = "outside")
+  theme(axis.text = element_text(size=8), 
+              axis.title = element_text(size=12),
+              strip.background = element_blank(),
+              strip.text = element_text(size=12),
+              legend.title=element_text(size=10),
+              legend.text=element_text(size=8),
+              strip.placement = "outside"); cent_plot
 
-ggsave("Figure S1. Stocking Management Purpose.jpeg",width=10, height=4,units = "in",dpi = 600)
+ggsave("Figure 2 Stocking and Cent.jpeg",plot = cent_plot,width=10, height=5,units = "in",dpi = 600)
+
+##################################
+###  Surface Area Plot
+##################################
+summary(Size_Cent_Area)
+
+#Model = Size_
+mod_comp %>% group_by(Size2) %>% summarize(min(Hectares_std), max(Hectares_std)) %>% as.data.frame()
+
+#####
+#compare centrarchid trends to top model
+#Hold area at mean value
+posts_Size_Cent_Area.1 <- add_epred_draws(Size_Cent_Area, re_formula = NA,
+                                        newdata = tibble(expand.grid(Size2 = c("a_no","b_lf","c_sf","d_fr"),
+                                                                     Hectares_std = 0,
+                                                                     Centrarchids_std=c(-0.4159660, 0, 1, 2),
+                                                                     Waterbody2 = "New_Lake")),
+                                        allow_new_levels = TRUE, dpar=T)
+
+#calculate means and 95% quantile-based CrI
+qi_Size_Cent_Area.1<-posts_Size_Cent_Area.1 %>%
+  mean_qi();qi_Size_Cent_Area.1 %>% as.data.frame()
+
+######
+#Evaluate surface area trends 
+#Hold Cent at mean value
+posts_Size_Cent_Area <- add_epred_draws(Size_Cent_Area, re_formula = NA,
+                                    newdata = tibble(expand.grid(Size2 = c("a_no","b_lf","c_sf","d_fr"),
+                                                                 Hectares_std = c(-0.6253450, 0, 1, 2),
+                                                                 Centrarchids_std=0,
+                                                                 Waterbody2 = "New_Lake")),
+                                    allow_new_levels = TRUE, dpar=T)
+
+#calculate means and 95% quantile-based CrI
+qi_Size_Cent_Area<-posts_Size_Cent_Area %>%
+  mean_qi();qi_Size_Cent_Area %>% as.data.frame()
+
+#probability that the slope parameter was positive
+Size_Cent_Area %>% spread_draws(b_Hectares_std) %>% 
+  summarize(`Prob>0`=(sum(b_Hectares_std>0))/4000)
+
+#Estimate probabilities of differences among groups
+posts_Size_Cent_Area_wide<-posts_Size_Cent_Area %>%  
+  ungroup() %>% 
+  select(.draw, Size2,Hectares_std, .epred) %>% 
+  pivot_wider(names_from = c(Size2, Hectares_std), values_from=.epred) %>% 
+  mutate(FryNo=`d_fr_0`-`a_no_0`,
+         SFNo=`c_sf_0`-`a_no_0`,
+         LFNo=`b_lf_0`-`a_no_0`, 
+         FrySF=`d_fr_0`-`c_sf_0`,
+         FryLF=`d_fr_0`-`b_lf_0`,
+         SFLF=`c_sf_0`-`b_lf_0`)
+(sum(posts_Size_Cent_Area_wide$FryNo>0))/4000
+(sum(posts_Size_Cent_Area_wide$SFNo>0))/4000
+(sum(posts_Size_Cent_Area_wide$LFNo>0))/4000
+(sum(posts_Size_Cent_Area_wide$FrySF>0))/4000
+(sum(posts_Size_Cent_Area_wide$FryLF>0))/4000
+(sum(posts_Size_Cent_Area_wide$SFLF>0))/4000
+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "CPGN")
+
+SCA1<-posts_Size_Cent_Area %>%
+  rename(prob=hu, CPGN=.epred) %>% 
+  pivot_longer(cols=c(prob, CPGN), names_to ="estimate") %>% 
+  mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
+  filter(Size2=="d_fr"|Size2=="a_no"|Size2=="b_lf"&Hectares_std==-0.6253450|Size2=="b_lf"&Hectares_std==0|Size2=="c_sf"&Hectares_std==-0.6253450|Size2=="c_sf"&Hectares_std==0) %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+sizecentarea<-bind_rows(SCA1, mod_comp)
+sizecentarea %<>% mutate(estimate=replace_na(estimate, "CPGN"))
+
+dummy_SCA <- tibble(Size2=c("d_fr", "c_sf", "b_lf", "a_no"),
+                   estimate=c("prob","prob","CPGN","CPGN"),
+                   value=c(0,1,0,15))
+#####
+sizecentarea$ab=recode(sizecentarea$estimate, "prob"="B", "CPGN"="A")
+
+
+area_plot<-sizecentarea %>%
+  ggplot()+
+  geom_violin(aes(x=Size2, y=value, fill=as.factor(Hectares_std), col=as.factor(Hectares_std)),alpha=0.9, position=position_dodge(width = .7))+
+  geom_text(aes(label=ab,x=0.7, y=Inf),fontface = "bold", vjust=2, hjust=1)+
+  xlab("Size at stocking")+
+  ylab(NULL)+
+  #labs(title = "Assumes a mean Centrarchid CPFN")+
+  scale_fill_manual(values=c("blue", "orange2", "#BB1250", "black"), name = "Hectares", labels=c("248", "1,385", "3,205", "5,024", "6,844"))+
+  scale_color_manual(values=c("blue", "orange2", "#BB1250", "black"),name = "Hectares", labels=c("248", "1,385", "3,205", "5,024", "6,844"))+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  scale_x_discrete(breaks=c("b_lf","c_sf", "d_fr", "a_no"),
+                   limits=c( "d_fr","c_sf","b_lf", "a_no"),
+                   labels=c("   Large Fingerling", "Small Fingerling   ", "Fry", "   Not stocked"))+
+  geom_blank(data=dummy_SCA, aes(y=value))+
+  theme_classic()+
+  theme(axis.text = element_text(size=8), 
+        axis.title = element_text(size=12),
+        strip.background = element_blank(),
+        strip.text = element_text(size=12),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=8),
+        strip.placement = "outside"); area_plot
+
+ggsave("Figure 3 Stocking Cent Area.jpeg",plot = area_plot,width=10, height=5,units = "in",dpi = 600)
+
+##################################
+###  NOP Plot
+##################################
+summary(Size_pred)
+
+#Model = Size_pred2
+mod_comp %>% group_by(Size2) %>% summarize(min(NOP.S_std), max(NOP.S_std)) %>% as.data.frame()
+
+#####
+#compare centrarchid trends to top model
+#Hold NOP at mean value
+posts_Size_preds.1 <- add_epred_draws(Size_pred, re_formula = NA,
+                                    newdata = tibble(expand.grid(Size2 = c("a_no","b_lf","c_sf","d_fr"),
+                                                                 NOP.S_std = 0,
+                                                                 Centrarchids_std=c(-0.4159660, 0, 1, 2),
+                                                                 Waterbody2 = "New_Lake")),
+                                    allow_new_levels = TRUE, dpar=T)
+
+#calculate means and 95% quantile-based CrI
+qi_Size_preds.1<-posts_Size_preds.1 %>%
+  mean_qi();qi_Size_preds.1 %>% as.data.frame()
+
+#####
+#Evaluate NOP trends
+#Hold Cent at mean value
+posts_Size_preds <- add_epred_draws(Size_pred, re_formula = NA,
+                                   newdata = tibble(expand.grid(Size2 = c("a_no","b_lf","c_sf","d_fr"),
+                                                                NOP.S_std = c(-0.6367459, 0, 1, 2),
+                                                                Centrarchids_std=0,
+                                                                Waterbody2 = "New_Lake")),
+                                   allow_new_levels = TRUE, dpar=T)
+
+#calculate means and 95% quantile-based CrI
+qi_Size_preds<-posts_Size_preds %>%
+  mean_qi();qi_Size_preds %>% as.data.frame()
+
+#probability that the slope parameter was positive
+Size_pred %>% spread_draws(b_NOP.S_std) %>% 
+  summarize(`Prob>0`=(sum(b_NOP.S_std<0))/4000)
+
+#Estimate probabilities of differences among groups
+posts_Size_preds_wide<-posts_Size_preds %>%  
+  ungroup() %>% 
+  select(.draw, Size2,NOP.S_std, .epred) %>% 
+  pivot_wider(names_from = c(Size2, NOP.S_std), values_from=.epred) %>% 
+  mutate(FryNo=`d_fr_0`-`a_no_0`,
+         SFNo=`c_sf_0`-`a_no_0`,
+         LFNo=`b_lf_0`-`a_no_0`, 
+         FrySF=`d_fr_0`-`c_sf_0`,
+         FryLF=`d_fr_0`-`b_lf_0`,
+         SFLF=`c_sf_0`-`b_lf_0`)
+(sum(posts_Size_preds_wide$FryNo>0))/4000
+(sum(posts_Size_preds_wide$SFNo>0))/4000
+(sum(posts_Size_preds_wide$LFNo>0))/4000
+(sum(posts_Size_preds_wide$FrySF>0))/4000
+(sum(posts_Size_preds_wide$FryLF>0))/4000
+(sum(posts_Size_preds_wide$SFLF>0))/4000
+
+#double plot
+labs <- c("Probability age-2 Walleye CPGN=0", "Age-2 Walleye CPGN")
+names(labs) <- c("prob", "CPGN")
+
+SP1<-posts_Size_preds %>%
+  rename(prob=hu, CPGN=.epred) %>% 
+  pivot_longer(cols=c(prob, CPGN), names_to ="estimate") %>% 
+  mutate(ab=plyr::mapvalues(estimate, from=c("prob", "CPGN"), to=c("B","A"))) %>% 
+  filter(Size2!="d_fr"|Size2=="d_fr"&NOP.S_std==-0.6367459|Size2=="d_fr"&NOP.S_std==0|Size2=="d_fr"&NOP.S_std==1) %>% 
+  as.data.frame() %>% 
+  select(-Waterbody2)
+
+sizepred<-bind_rows(SP1, mod_comp)
+sizepred %<>% mutate(estimate=replace_na(estimate, "CPGN"))
+
+dummy_SP <- tibble(Size2=c("d_fr", "c_sf", "b_lf", "a_no"),
+                   estimate=c("prob","prob","CPGN","CPGN"),
+                   value=c(0,1,0,15))
+#####
+sizepred$ab=recode(sizepred$estimate, "prob"="B", "CPGN"="A")
+
+
+nop_plot<-sizepred %>%
+  ggplot()+
+  geom_violin(aes(x=Size2, y=value, fill=as.factor(NOP.S_std), col=as.factor(NOP.S_std)),alpha=0.9, position=position_dodge(width = 0.7))+
+  geom_text(aes(label=ab,x=0.7, y=Inf),fontface = "bold", vjust=2, hjust=1)+
+  xlab("Size at stocking")+
+  ylab(NULL)+
+  #labs(title = "Assumes a mean Centrarchid CPFN")+
+  scale_fill_manual(values=c("blue", "orange2", "#BB1250", "black", "gray80"), name = "Northern Pike \nCPGN", labels=c("0", "2.1", "5.3", "8.5", "11.8"))+
+  scale_color_manual(values=c("blue", "orange2", "#BB1250", "black","gray80"),name = "Northern Pike \nCPGN", labels=c("0", "2.1", "5.3", "8.5", "11.8"))+
+  facet_wrap(~estimate, scales="free", strip.position = "left", 
+             labeller= labeller(estimate=labs))+
+  scale_x_discrete(breaks=c("b_lf","c_sf", "d_fr", "a_no"),
+                   limits=c( "d_fr","c_sf","b_lf", "a_no"),
+                   labels=c("   Large Fingerling", "Small Fingerling   ", "Fry", "   Not stocked"))+
+  geom_blank(data=dummy_SP, aes(y=value))+
+  theme_classic()+
+  theme(axis.text = element_text(size=8), 
+        axis.title = element_text(size=12),
+        strip.background = element_blank(),
+        strip.text = element_text(size=12),
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=8),
+        strip.placement = "outside"); nop_plot
+
+ggsave("Figure 4 Stocking Cent NOP.jpeg",plot = nop_plot,width=10, height=5,units = "in",dpi = 600)
+
+
