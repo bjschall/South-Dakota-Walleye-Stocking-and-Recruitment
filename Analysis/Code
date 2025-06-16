@@ -962,7 +962,7 @@ cent_plot<-sizecent %>%
   ggplot()+
   geom_violin(aes(x=Size2, y=value, fill=as.factor(Centrarchids_std), col=as.factor(Centrarchids_std)),alpha=0.9, position=position_dodge(width = .7))+
   geom_text(aes(label=ab,x=0.7, y=Inf),fontface = "bold", vjust=2, hjust=1)+
-  xlab(NULL)+
+  xlab("Size at stocking")+
   ylab(NULL)+
   scale_fill_manual(values=c("blue", "orange2", "#BB1250", "black"),name = "Centrarchid \nCPFN  ", labels=c("0", "14.8", "50.4", "86.0"))+
   scale_color_manual(values=c("blue", "orange2", "#BB1250", "black"),name = "Centrarchid \nCPFN  ", labels=c("0", "14.8", "50.4", "86.0"))+
@@ -1194,5 +1194,3 @@ nop_plot<-sizepred %>%
         strip.placement = "outside"); nop_plot
 
 ggsave("Figure 4 Stocking Cent NOP.jpeg",plot = nop_plot,width=10, height=5,units = "in",dpi = 600)
-
-
